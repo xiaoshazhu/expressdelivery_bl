@@ -1,0 +1,21 @@
+{
+  "name": "ahsz-plugin-sdk-node",
+  "version": "1.3.0",
+  "description": "Anhuishuzhi Plugin SDK for Node.js (Express and native HTTP)",
+  "main": "index.js",
+  "scripts": {
+    "test": "node enterprise-registration.test.js && node http-adapters.test.js && node legacy-extensions.test.js"
+  },
+  "files": [
+    "index.js",
+    "announcement-config.js",
+    "extensions.js",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.13.0",
+    "mysql2": "^3.9.0"
+  }
+}

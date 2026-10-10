@@ -1,0 +1,71 @@
+{
+    "schema_version": 1,
+    "revision": 13,
+    "currency": "CNY",
+    "unit": "次",
+    "plans": [
+        {
+            "plan_id": "trial_15",
+            "name": "试用套餐",
+            "billing_type": "quota",
+            "quota": 15,
+            "price": 0,
+            "enabled": true,
+            "description": "新企业免费体验 15 次物流查询"
+        },
+        {
+            "plan_id": "express_1000",
+            "name": "1,000 次查询包",
+            "billing_type": "quota",
+            "quota": 1000,
+            "price": 0.02,
+            "enabled": true,
+            "description": "1,000 次快递查询额度（折合 0.012元/次）"
+        },
+        {
+            "plan_id": "express_5000",
+            "name": "5,000 次查询包",
+            "billing_type": "quota",
+            "quota": 5000,
+            "price": 50,
+            "enabled": true,
+            "description": "5,000 次快递查询额度（折合 0.010元/次）"
+        },
+        {
+            "plan_id": "express_10000",
+            "name": "10,000 次查询包",
+            "billing_type": "quota",
+            "quota": 10000,
+            "price": 90,
+            "enabled": true,
+            "description": "10,000 次快递查询额度（折合 0.009元/次，热销推荐）"
+        },
+        {
+            "plan_id": "express_50000",
+            "name": "50,000 次查询包",
+            "billing_type": "quota",
+            "quota": 50000,
+            "price": 399,
+            "enabled": true,
+            "description": "50,000 次快递查询额度（折合 0.0079元/次）"
+        },
+        {
+            "plan_id": "express_100000",
+            "name": "100,000 次查询包",
+            "billing_type": "quota",
+            "quota": 100000,
+            "price": 699,
+            "enabled": true,
+            "description": "100,000 次快递查询额度（折合 0.0069元/次）"
+        },
+        {
+            "plan_id": "express_300000",
+            "name": "300,000 次查询包",
+            "billing_type": "quota",
+            "quota": 300000,
+            "price": 1699,
+            "enabled": true,
+            "description": "300,000 次快递查询额度（折合 0.0056元/次，单次最低）"
+        }
+    ]
+}

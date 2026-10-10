@@ -1,0 +1,27 @@
+{
+  "name": "feishu-express-sidebar-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "server": "node --env-file-if-exists=.env server/index.mjs",
+    "build": "tsc --noEmit && vite build",
+    "start": "node --env-file-if-exists=.env server/index.mjs",
+    "test": "node --test tests/aliyun-kzexpress.test.mjs tests/kuaidi100.test.mjs tests/service.test.mjs"
+  },
+  "dependencies": {
+    "@lark-base-open/js-sdk": "1.0.2",
+    "@lark-base-open/node-sdk": "1.0.1",
+    "ahsz-plugin-sdk-node": "file:vendor/ahsz-plugin-sdk-node",
+    "mysql2": "^3.24.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.0"
+  }
+}

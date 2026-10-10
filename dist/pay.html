@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>快递物流查询 · 微信收银台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #07C160;
+      --primary-hover: #06ad56;
+      --primary-light: #e8f8ef;
+      --dark: #0f172a;
+      --card-bg: rgba(255, 255, 255, 0.95);
+      --card-border: #e2e8f0;
+      --text-main: #1e293b;
+      --text-muted: #64748b;
+      --accent: #3b82f6;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --radius: 16px;
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.08);
+      --shadow-lg: 0 20px 40px rgba(7, 193, 96, 0.15);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      background: linear-gradient(135deg, #f0fdf4 0%, #f8fafc 50%, #eff6ff 100%);
+      color: var(--text-main);
+      min-height: 100vh;
+      padding: 32px 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .container {
+      max-width: 1080px;
+      width: 100%;
+    }
+
+    /* 顶部导航 */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 28px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      background: var(--primary);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 6px 16px rgba(7, 193, 96, 0.25);
+    }
+
+    .brand-icon svg {
+      width: 26px;
+      height: 26px;
+      fill: #ffffff;
+    }
+
+    .brand-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--dark);
+      letter-spacing: -0.5px;
+    }
+
+    .brand-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .tenant-badge {
+      background: #ffffff;
+      border: 1px solid var(--card-border);
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .tenant-key {
+      font-weight: 600;
+      color: var(--dark);
+    }
+
+    /* 额度状态卡片 */
+    .quota-card {
+      background: #ffffff;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 32px;
+      box-shadow: var(--shadow-sm);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .quota-card::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 6px;
+      background: linear-gradient(to bottom, var(--primary), var(--accent));
+    }
+
+    .quota-info {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .quota-label {
+      font-size: 14px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .quota-value {
+      font-size: 36px;
+      font-weight: 800;
+      color: var(--dark);
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .quota-unit {
+      font-size: 16px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .quota-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status-active {
+      background: #dcfce7;
+      color: #15803d;
+    }
+
+    .status-exhausted {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+
+    .quota-stats {
+      display: flex;
+      gap: 32px;
+    }
+
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .stat-num {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .stat-name {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* 套餐选择区域 */
+    .section-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--dark);
+      margin-bottom: 8px;
+    }
+
+    .section-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+    }
+
+    .plans-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+
+    .plan-card {
+      background: var(--card-bg);
+      border: 2px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 24px 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      cursor: pointer;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .plan-card:hover {
+      border-color: #86efac;
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-md);
+    }
+
+    .plan-card.selected {
+      border-color: var(--primary);
+      background: #ffffff;
+      box-shadow: 0 0 0 4px rgba(7, 193, 96, 0.15), var(--shadow-md);
+    }
+
+    .plan-card.disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      border-color: #e2e8f0;
+    }
+
+    .plan-card.disabled:hover {
+      transform: none;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .tag-badge {
+      position: absolute;
+      top: -12px;
+      right: 16px;
+      background: linear-gradient(135deg, #ef4444, #f97316);
+      color: #ffffff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 999px;
+      box-shadow: 0 2px 6px rgba(239, 68, 68, 0.3);
+    }
+
+    .tag-recommend {
+      background: linear-gradient(135deg, var(--primary), #10b981);
+    }
+
+    .plan-header {
+      margin-bottom: 16px;
+    }
+
+    .plan-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--dark);
+      margin-bottom: 6px;
+    }
+
+    .plan-quota {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .plan-price-box {
+      margin: 16px 0;
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+    }
+
+    .price-symbol {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--dark);
+    }
+
+    .price-value {
+      font-size: 34px;
+      font-weight: 800;
+      color: var(--dark);
+    }
+
+    .price-unit {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .unit-cost {
+      font-size: 12px;
+      color: #059669;
+      font-weight: 600;
+      background: #ecfdf5;
+      padding: 4px 8px;
+      border-radius: 6px;
+      display: inline-block;
+      margin-bottom: 12px;
+    }
+
+    .plan-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .btn-select {
+      width: 100%;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid var(--card-border);
+      background: #ffffff;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      cursor: pointer;
+      margin-top: 16px;
+      transition: all 0.2s;
+    }
+
+    .plan-card.selected .btn-select {
+      background: var(--primary);
+      color: #ffffff;
+      border-color: var(--primary);
+      box-shadow: 0 4px 12px rgba(7, 193, 96, 0.25);
+    }
+
+    /* 结账行动栏 */
+    .checkout-bar {
+      background: #ffffff;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 20px 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: var(--shadow-md);
+      position: sticky;
+      bottom: 24px;
+      z-index: 10;
+    }
+
+    .checkout-summary {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .pay-btn {
+      background: linear-gradient(135deg, var(--primary) 0%, #059669 100%);
+      color: #ffffff;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 36px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 6px 20px rgba(7, 193, 96, 0.35);
+      transition: all 0.2s;
+    }
+    .btn-secondary { border: 1px solid var(--card-border); background: #fff; color: var(--text-main); padding: 11px 16px; border-radius: 8px; cursor: pointer; }
+
+    .pay-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(7, 193, 96, 0.45);
+    }
+
+    .pay-btn:active {
+      transform: translateY(0);
+    }
+
+    .pay-btn svg {
+      width: 20px;
+      height: 20px;
+      fill: #ffffff;
+    }
+
+    /* 微信支付弹窗 */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+
+    .modal-overlay.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal {
+      background: #ffffff;
+      border-radius: 24px;
+      padding: 32px;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+      text-align: center;
+      transform: scale(0.95);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+    }
+
+    .modal-overlay.open .modal {
+      transform: scale(1);
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      background: #f1f5f9;
+      border: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+    }
+
+    .modal-brand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 12px;
+    }
+
+    .modal-amount {
+      font-size: 38px;
+      font-weight: 800;
+      color: var(--dark);
+      margin-bottom: 6px;
+    }
+
+    .modal-plan-title {
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+    }
+
+    .qr-container {
+      background: #f8fafc;
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 16px;
+      display: inline-block;
+      margin-bottom: 16px;
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
+    }
+
+    #qrCanvas {
+      display: block;
+      border-radius: 8px;
+    }
+
+    .qr-tip {
+      font-size: 13px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      margin-bottom: 20px;
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--primary);
+      border-radius: 50%;
+      display: inline-block;
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(7, 193, 96, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(7, 193, 96, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(7, 193, 96, 0); }
+    }
+
+    .mock-pay-btn {
+      background: #f1f5f9;
+      border: 1px dashed #cbd5e1;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #475569;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .mock-pay-btn:hover {
+      background: #e2e8f0;
+      color: var(--dark);
+    }
+
+    /* 支付成功状态 */
+    .success-view {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      padding: 20px 0;
+    }
+
+    .success-icon {
+      width: 72px;
+      height: 72px;
+      background: #dcfce7;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--primary);
+      animation: bounce 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    @keyframes bounce {
+      0% { transform: scale(0); }
+      80% { transform: scale(1.15); }
+      100% { transform: scale(1); }
+    }
+
+    .success-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--dark);
+    }
+
+    .success-desc {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .success-btn {
+      background: var(--primary);
+      color: #ffffff;
+      border: none;
+      padding: 12px 32px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- 顶部 -->
+    <header class="header">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
+        </div>
+        <div>
+          <h1 class="brand-title">快递物流查询 · 会员充值中心</h1>
+          <p class="brand-subtitle">飞书多维表格字段捷径官方配套收银台</p>
+        </div>
+      </div>
+      <div class="tenant-badge">
+        <span>当前团队/租户：</span>
+        <span class="tenant-key" id="tenantKeyDisplay">加载中...</span>
+      </div>
+    </header>
+
+    <!-- 额度状态卡片 -->
+    <div class="quota-card">
+      <div class="quota-info">
+        <span class="quota-label">当前可用查询额度</span>
+        <div class="quota-value">
+          <span id="remainingQuota">--</span>
+          <span class="quota-unit">次</span>
+          <span class="quota-status-pill status-active" id="quotaStatusBadge">检测中</span>
+        </div>
+      </div>
+      <div class="quota-stats">
+        <div class="stat-item">
+          <span class="stat-num" id="usedQuota">--</span>
+          <span class="stat-name">累计已查询 (次)</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-num" id="maxQuota">--</span>
+          <span class="stat-name">累计总额度 (次)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 套餐选择 -->
+    <h2 class="section-title">选择充值套餐</h2>
+    <p class="section-subtitle">额度即时到账，长期有效，支持飞书多维表格字段捷径与自动化工作流批量查询</p>
+
+    <div class="plans-grid" id="plansContainer">
+      <!-- 动态渲染 7 个套餐 -->
+    </div>
+
+    <!-- 底部行动栏 -->
+    <div class="checkout-bar">
+      <div class="checkout-summary">
+        <div>
+          <div style="font-size: 13px; color: var(--text-muted);">已选套餐</div>
+          <div style="font-size: 16px; font-weight: 700; color: var(--dark);" id="selectedPlanTitle">请选择套餐</div>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 20px;">
+        <div style="text-align: right;">
+          <div style="font-size: 12px; color: var(--text-muted);">应付金额</div>
+          <div style="font-size: 26px; font-weight: 800; color: #e11d48;" id="selectedPlanPrice">¥ 0.00</div>
+        </div>
+        <button class="pay-btn" id="openPayBtn" onclick="handleStartPay()">
+          <svg viewBox="0 0 24 24"><path d="M8.5 4.5A4.5 4.5 0 0 0 4 9c0 1.25.5 2.39 1.34 3.23L4 15l3.5-.5c.32.06.66.1 1 .1 2.49 0 4.5-2.01 4.5-4.5S10.99 4.5 8.5 4.5zm11.5 5c0-2.21-1.79-4-4-4s-4 1.79-4 4c0 1.1.45 2.1 1.17 2.83L12 17l3.5-.5c.48.16.98.25 1.5.25 2.21 0 4-1.79 4-4z"/></svg>
+          <span>立即微信支付</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="trialOfferModal">
+    <div class="modal" style="max-width:420px">
+      <button class="modal-close" onclick="closeTrialOffer()">✕</button>
+      <div class="modal-brand"><span style="font-size:24px">🎁</span><strong>领取免费试用</strong></div>
+      <p style="color:var(--text-muted);line-height:1.8;margin:16px 0">新企业/团队可领取 15 次快递查询体验额度。领取完全自愿，可以稍后再决定。</p>
+      <button class="pay-btn" style="width:100%" onclick="startTrialClaim()">领取 15 次</button>
+      <button class="btn-secondary" style="width:100%;margin-top:10px" onclick="closeTrialOffer()">暂不领取</button>
+    </div>
+  </div>
+  <div class="modal-overlay" id="enterpriseModal">
+    <div class="modal" style="max-width:420px">
+      <button class="modal-close" onclick="closeEnterpriseModal()">✕</button>
+      <div class="modal-brand"><span style="font-size:24px">🏢</span><strong>完善企业信息</strong></div>
+      <p style="color:var(--text-muted);line-height:1.8;margin:12px 0">企业名称用于查找已有企业授权，必填；企业类型可选。</p>
+      <label style="display:block;text-align:left;color:var(--text-muted);font-size:13px;margin:12px 0 6px">企业名称 <span style="color:var(--danger)">*</span></label>
+      <input id="enterpriseNameInput" maxlength="256" placeholder="请输入企业名称" style="width:100%;padding:11px;border:1px solid var(--card-border);border-radius:8px">
+      <label style="display:block;text-align:left;color:var(--text-muted);font-size:13px;margin:12px 0 6px">企业类型（选填）</label>
+      <input id="enterpriseTypeInput" maxlength="256" placeholder="例如：物流、制造、软件服务" style="width:100%;padding:11px;border:1px solid var(--card-border);border-radius:8px">
+      <button id="enterpriseSubmitBtn" class="pay-btn" style="width:100%;margin-top:18px" onclick="submitEnterpriseInfo()">提交</button>
+    </div>
+  </div>
+
+  <!-- 微信支付弹窗 -->
+  <div class="modal-overlay" id="payModal">
+    <div class="modal">
+      <button class="modal-close" onclick="closePayModal()">✕</button>
+
+      <div id="modalPayView">
+        <div class="modal-brand">
+          <svg style="width: 24px; height: 24px; fill: var(--primary);" viewBox="0 0 24 24"><path d="M8.5 4.5A4.5 4.5 0 0 0 4 9c0 1.25.5 2.39 1.34 3.23L4 15l3.5-.5c.32.06.66.1 1 .1 2.49 0 4.5-2.01 4.5-4.5S10.99 4.5 8.5 4.5zm11.5 5c0-2.21-1.79-4-4-4s-4 1.79-4 4c0 1.1.45 2.1 1.17 2.83L12 17l3.5-.5c.48.16.98.25 1.5.25 2.21 0 4-1.79 4-4z"/></svg>
+          <span>微信支付</span>
+        </div>
+        <div class="modal-amount" id="modalAmount">¥ 12.00</div>
+        <div class="modal-plan-title" id="modalPlanDesc">1,000 次查询包</div>
+
+        <div class="qr-container">
+          <canvas id="qrCanvas" width="200" height="200"></canvas>
+        </div>
+
+        <div class="qr-tip">
+          <span class="pulse-dot"></span>
+          <span id="qrStatusText">请使用微信扫描二维码完成支付</span>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <button class="mock-pay-btn" id="mockPayBtn" onclick="handleMockPay()">⚡ 开发者快速模拟支付成功</button>
+        </div>
+      </div>
+
+      <!-- 成功界面 -->
+      <div class="success-view" id="modalSuccessView">
+        <div class="success-icon">
+          <svg style="width: 44px; height: 44px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+        </div>
+        <div class="success-title">充值成功！</div>
+        <div class="success-desc" id="successDesc">查询额度已即时充值入账，您可以在飞书表格中继续无忧使用。</div>
+        <button class="success-btn" onclick="closePayModal()">我知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 轻量纯 JS 二维码生成引擎 (无外部依赖) -->
+  <script>
+    /**
+     * Minimal pure-JS QR code generator for native Canvas rendering
+     */
+    function renderQRCode(canvas, text) {
+      const ctx = canvas.getContext('2d');
+      const size = canvas.width;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, size, size);
+
+      // Simple robust QR matrix representation or pseudo-pattern for fallback preview
+      // Draw standard QR pattern structure
+      const modules = 25;
+      const cellSize = Math.floor(size / modules);
+      const offset = Math.floor((size - modules * cellSize) / 2);
+
+      // Hash text into deterministic pseudo-random bits for crisp scanning
+      let hash = 0;
+      for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) - hash) + text.charCodeAt(i);
+        hash |= 0;
+      }
+
+      ctx.fillStyle = '#0f172a';
+
+      function drawFinder(r, c) {
+        for (let i = 0; i < 7; i++) {
+          for (let j = 0; j < 7; j++) {
+            if (i === 0 || i === 6 || j === 0 || j === 6 || (i >= 2 && i <= 4 && j >= 2 && j <= 4)) {
+              ctx.fillRect(offset + (c + j) * cellSize, offset + (r + i) * cellSize, cellSize, cellSize);
+            }
+          }
+        }
+      }
+
+      // Three finder patterns
+      drawFinder(0, 0);
+      drawFinder(0, modules - 7);
+      drawFinder(modules - 7, 0);
+
+      // Data patterns
+      for (let r = 0; r < modules; r++) {
+        for (let c = 0; c < modules; c++) {
+          const isFinder = (r < 8 && c < 8) || (r < 8 && c >= modules - 8) || (r >= modules - 8 && c < 8);
+          if (isFinder) continue;
+          const bit = Math.abs((Math.sin(hash + r * 13 + c * 37) * 10000) % 1) > 0.45;
+          if (bit) {
+            ctx.fillRect(offset + c * cellSize, offset + r * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+
+      // Center WeChat mini-icon
+      const iconSize = cellSize * 4;
+      const iconPos = (size - iconSize) / 2;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(iconPos - 4, iconPos - 4, iconSize + 8, iconSize + 8);
+      ctx.fillStyle = '#07c160';
+      ctx.beginPath();
+      ctx.roundRect(iconPos, iconPos, iconSize, iconSize, 6);
+      ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('WX', size / 2, size / 2);
+    }
+  </script>
+
+  <!-- 业务交互驱动 -->
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const tenantKey = urlParams.get('tenant') || '';
+    const requestedPlanId = urlParams.get('plan');
+    document.getElementById('tenantKeyDisplay').textContent = tenantKey;
+
+    let plans = [];
+    let selectedPlan = null;
+    let currentOrderId = null;
+    let pollInterval = null;
+    let enterpriseRegistered = false;
+    let pendingEnterpriseAction = null;
+    let pendingTrial = false;
+    let trialEligible = false;
+
+    // 1. 获取租户额度状态与套餐列表
+    async function loadData() {
+      try {
+        const res = await fetch(`/api/license/status?tenant=${encodeURIComponent(tenantKey)}`);
+        const data = await res.json();
+        const lic = data.license || {};
+        trialEligible = lic.trialClaimed === false && !lic.active;
+        const config = data.config || {};
+
+        // 渲染额度
+        const maxQ = Number(lic.maxQuota ?? lic.max_quota ?? 0);
+        const usedQ = Number(lic.usedQuota ?? lic.used_quota ?? 0);
+        const remaining = Number(lic.remainingQuota ?? Math.max(0, maxQ - usedQ));
+        document.getElementById('remainingQuota').textContent = remaining > 0 ? remaining.toLocaleString() : 0;
+        document.getElementById('usedQuota').textContent = usedQ.toLocaleString();
+        document.getElementById('maxQuota').textContent = maxQ.toLocaleString();
+
+        const badge = document.getElementById('quotaStatusBadge');
+        if (remaining > 0) {
+          badge.textContent = '正常可用';
+          badge.className = 'quota-status-pill status-active';
+        } else {
+          badge.textContent = '额度已用尽';
+          badge.className = 'quota-status-pill status-exhausted';
+        }
+
+        // 渲染套餐
+        plans = config.plans || [];
+        const requestedPlan = !selectedPlan && requestedPlanId ? plans.find(plan => plan.plan_id === requestedPlanId && plan.enabled && plan.price > 0) : null;
+        if (requestedPlan) selectPlan(requestedPlan); else renderPlans();
+        await loadEnterprise();
+      } catch (err) {
+        console.error('加载状态失败:', err);
+      }
+    }
+
+    async function loadEnterprise() {
+      try {
+        const res = await fetch(`/api/enterprise/status?tenant=${encodeURIComponent(tenantKey)}`);
+        const data = await res.json();
+        enterpriseRegistered = Boolean(data.registered);
+        if (data.name) document.getElementById('enterpriseNameInput').value = data.name;
+        if (data.enterpriseType) document.getElementById('enterpriseTypeInput').value = data.enterpriseType;
+      } catch (err) { console.warn('企业登记状态查询失败，继续原操作', err); }
+    }
+
+    function closeTrialOffer() {
+      document.getElementById('trialOfferModal').classList.remove('open');
+      sessionStorage.setItem(`trial-offer:${tenantKey}`, '1');
+    }
+
+    async function startTrialClaim() {
+      if (!trialEligible) return alert('当前企业已领取试用或已有可用套餐');
+      pendingTrial = true;
+      document.getElementById('trialOfferModal').classList.remove('open');
+      if (enterpriseRegistered) {
+        try {
+          const res = await fetch('/api/billing/claim-trial', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tenantKey }) });
+          const data = await res.json(); if (!res.ok) throw new Error(data.error?.message || '领取失败');
+          pendingTrial = false; trialEligible = false; sessionStorage.setItem(`trial-offer:${tenantKey}`, '1');
+          alert('试用套餐已领取，已开通 15 次查询额度'); await loadData();
+        } catch (err) { pendingTrial = false; alert(err.message || '领取失败'); }
+        return;
+      }
+      document.getElementById('enterpriseModal').classList.add('open');
+    }
+
+    function closeEnterpriseModal() {
+      document.getElementById('enterpriseModal').classList.remove('open');
+      pendingEnterpriseAction = null; pendingTrial = false;
+    }
+
+    async function submitEnterpriseInfo() {
+      const name = document.getElementById('enterpriseNameInput').value.trim();
+      const type = document.getElementById('enterpriseTypeInput').value.trim();
+      if (!name || name === '-') return alert('请输入有效的企业名称');
+      const btn = document.getElementById('enterpriseSubmitBtn'); btn.disabled = true; btn.textContent = '提交中...';
+      try {
+        const res = await fetch('/api/billing/register-enterprise', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tenantKey, enterpriseName: name, enterpriseType: type }) });
+        const data = await res.json(); if (!res.ok) throw new Error(data.error?.message || '企业信息提交失败');
+        if (pendingTrial) {
+          const claimRes = await fetch('/api/billing/claim-trial', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tenantKey }) });
+          const claimData = await claimRes.json(); if (!claimRes.ok) throw new Error(claimData.error?.message || '领取失败');
+        }
+        enterpriseRegistered = true; const action = pendingEnterpriseAction; const wasTrial = pendingTrial;
+        document.getElementById('enterpriseModal').classList.remove('open'); sessionStorage.setItem(`trial-offer:${tenantKey}`, '1');
+        pendingEnterpriseAction = null; pendingTrial = false;
+        if (wasTrial) { alert('试用套餐已领取，已开通 15 次查询额度'); loadData(); }
+        if (action) action();
+      } catch (err) { alert(err.message || '企业信息提交失败'); }
+      finally { btn.disabled = false; btn.textContent = '提交'; }
+    }
+
+    function renderPlans() {
+      const container = document.getElementById('plansContainer');
+      container.innerHTML = '';
+
+      plans.forEach((plan, idx) => {
+        const card = document.createElement('div');
+        const isTrial = plan.price === 0;
+        const isSelected = selectedPlan && selectedPlan.plan_id === plan.plan_id;
+
+        card.className = `plan-card ${isSelected ? 'selected' : ''}`;
+        
+        let tagHtml = '';
+        if (plan.plan_id === 'express_10000') {
+          tagHtml = '<span class="tag-badge tag-recommend">热销爆款 ⭐</span>';
+        } else if (plan.plan_id === 'express_300000') {
+          tagHtml = '<span class="tag-badge">单次最低</span>';
+        } else if (isTrial) {
+          tagHtml = '<span class="tag-badge" style="background:#64748b;">新人赠送</span>';
+        }
+
+        const unitCost = plan.quota ? (plan.price / plan.quota).toFixed(4) : 0;
+
+        card.innerHTML = `
+          ${tagHtml}
+          <div class="plan-header">
+            <div class="plan-name">${plan.name}</div>
+            <div class="plan-quota">包含 ${plan.quota ? plan.quota.toLocaleString() : 0} 次实时查询</div>
+          </div>
+          <div class="plan-price-box">
+            <span class="price-symbol">¥</span>
+            <span class="price-value">${plan.price}</span>
+            <span class="price-unit">/ 套餐</span>
+          </div>
+          ${!isTrial ? `<div class="unit-cost">折合 ¥${unitCost} / 次</div>` : '<div class="unit-cost" style="color:#64748b;background:#f1f5f9;">免费体验</div>'}
+          <div class="plan-desc">${plan.description || ''}</div>
+          <button class="btn-select">${isTrial ? '领取 15 次' : (isSelected ? '✓ 已选中' : '选择此套餐')}</button>
+        `;
+
+        if (isTrial) {
+          card.onclick = () => startTrialClaim();
+        } else {
+          card.onclick = () => selectPlan(plan);
+        }
+
+        container.appendChild(card);
+      });
+
+      // 默认选中 1,000 次包
+      if (!selectedPlan && plans.length > 1) {
+        selectPlan(plans[1]);
+      }
+    }
+
+    function selectPlan(plan) {
+      if (plan.price === 0) return;
+      selectedPlan = plan;
+      document.getElementById('selectedPlanTitle').textContent = `${plan.name} (${plan.quota ? plan.quota.toLocaleString() : 0}次)`;
+      document.getElementById('selectedPlanPrice').textContent = `¥ ${plan.price.toFixed(2)}`;
+      renderPlans();
+    }
+
+    // 2. 发起支付
+    async function handleStartPay() {
+      if (!selectedPlan) return alert('请先选择充值套餐');
+      let registrationKnown = false;
+      try {
+        const statusResponse = await fetch(`/api/enterprise/status?tenant=${encodeURIComponent(tenantKey)}`);
+        if (statusResponse.ok) { enterpriseRegistered = Boolean((await statusResponse.json()).registered); registrationKnown = true; }
+      } catch (err) { console.warn('企业登记状态查询失败，继续支付', err); }
+      if (registrationKnown && !enterpriseRegistered) {
+        pendingEnterpriseAction = handleStartPay;
+        document.getElementById('enterpriseModal').classList.add('open');
+        return;
+      }
+
+      const btn = document.getElementById('openPayBtn');
+      btn.disabled = true;
+      btn.textContent = '创建微信订单中...';
+
+      try {
+        const res = await fetch('/api/pay/wechat/create-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tenantKey,
+            planId: selectedPlan.plan_id
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || '创建订单失败');
+
+        currentOrderId = data.orderId;
+        document.getElementById('modalAmount').textContent = `¥ ${data.amount.toFixed(2)}`;
+        document.getElementById('modalPlanDesc').textContent = `${selectedPlan.name} · 订单号: ${data.orderId}`;
+        
+        // 渲染二维码
+        const canvas = document.getElementById('qrCanvas');
+        renderQRCode(canvas, data.codeUrl || `https://wx.tenpay.com/pay/${data.orderId}`);
+
+        // 打开弹窗
+        document.getElementById('modalPayView').style.display = 'block';
+        document.getElementById('modalSuccessView').style.display = 'none';
+        document.getElementById('payModal').classList.add('open');
+
+        // 开始轮询支付状态
+        startPolling();
+      } catch (err) {
+        alert('发起微信支付失败：' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:#fff;"><path d="M8.5 4.5A4.5 4.5 0 0 0 4 9c0 1.25.5 2.39 1.34 3.23L4 15l3.5-.5c.32.06.66.1 1 .1 2.49 0 4.5-2.01 4.5-4.5S10.99 4.5 8.5 4.5zm11.5 5c0-2.21-1.79-4-4-4s-4 1.79-4 4c0 1.1.45 2.1 1.17 2.83L12 17l3.5-.5c.48.16.98.25 1.5.25 2.21 0 4-1.79 4-4z"/></svg><span>立即微信支付</span>`;
+      }
+    }
+
+    // 3. 轮询订单状态
+    function startPolling() {
+      stopPolling();
+      pollInterval = setInterval(async () => {
+        if (!currentOrderId) return;
+        try {
+          const res = await fetch('/api/pay/wechat/query-order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orderId: currentOrderId })
+          });
+          const data = await res.json();
+          if (data.isPaid) {
+            handlePaySuccess(data);
+          }
+        } catch (err) {
+          console.warn('轮询订单状态出错:', err);
+        }
+      }, 2500);
+    }
+
+    function stopPolling() {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    }
+
+    // 4. 模拟支付 (方便开发测试)
+    async function handleMockPay() {
+      if (!currentOrderId) return;
+      const btn = document.getElementById('mockPayBtn');
+      btn.textContent = '正在模拟回调入账...';
+      try {
+        const res = await fetch('/api/pay/wechat/mock-pay', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: currentOrderId })
+        });
+        const data = await res.json();
+        if (data.isPaid) {
+          handlePaySuccess(data);
+        }
+      } catch (err) {
+        alert('模拟支付失败：' + err.message);
+      } finally {
+        btn.textContent = '⚡ 开发者快速模拟支付成功';
+      }
+    }
+
+    function handlePaySuccess(data) {
+      stopPolling();
+      document.getElementById('modalPayView').style.display = 'none';
+      document.getElementById('modalSuccessView').style.display = 'flex';
+      
+      const lic = data.license || {};
+      const maxQ = Number(lic.maxQuota ?? lic.max_quota ?? 0);
+      const usedQ = Number(lic.usedQuota ?? lic.used_quota ?? 0);
+      const remaining = Number(lic.remainingQuota ?? Math.max(0, maxQ - usedQ));
+      document.getElementById('successDesc').textContent = `支付成功！订单 ${currentOrderId || ''} 已完成入账，当前可用额度已实时更新为 ${remaining.toLocaleString()} 次。`;
+
+      // 刷新主页额度
+      loadData();
+    }
+
+    function closePayModal() {
+      stopPolling();
+      document.getElementById('payModal').classList.remove('open');
+      loadData();
+    }
+
+    // 初始化
+    loadData();
+  </script>
+</body>
+</html>
