@@ -54,6 +54,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
   const orders = new Map();
   const enterprises = new Map();
   const consumed = new Set();
+  const protectedQuota = new Map();
   let statePromise;
 
   const isTest = process.env.NODE_ENV === 'test' || process.execArgv.includes('--test') || Boolean(process.env.NODE_TEST_CONTEXT);
@@ -84,10 +85,13 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
       for (const item of state.orders || []) orders.set(item.orderId, item);
       for (const item of state.enterprises || []) enterprises.set(item.tenantKey, item);
       for (const item of state.consumed || []) consumed.add(item);
+      for (const [tenantKey, quota] of state.protectedQuota || []) {
+        if (typeof tenantKey === 'string' && Number.isSafeInteger(quota) && quota >= 0) protectedQuota.set(tenantKey, quota);
+      }
     }).catch(error => { if (error.code !== 'ENOENT') throw new ApiError(503, 'BILLING_STATE', `读取计费状态失败：${error.message}`); });
     await statePromise;
   };
-  const saveState = async () => atomicWrite(statePath, { licenses: [...licenses.values()], orders: [...orders.values()], enterprises: [...enterprises.values()], consumed: [...consumed] });
+  const saveState = async () => atomicWrite(statePath, { licenses: [...licenses.values()], orders: [...orders.values()], enterprises: [...enterprises.values()], consumed: [...consumed], protectedQuota: [...protectedQuota] });
 
   const getConfig = async () => {
     if (sdk?.billingAdapter?.getConfig) {
@@ -135,6 +139,20 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
           );
           record = { tenant_key: k, billing_type: 'quota', used_quota: 0, max_quota: 0, trial_claimed: 0, expire_time: null };
         }
+        // 旧兑换逻辑把赠送次数记成负的 used_quota；迁移到 max_quota，剩余次数保持不变。
+        if (record.billing_type === 'quota' && Number(record.used_quota) < 0) {
+          await dbPool.query('UPDATE platform_license SET max_quota = max_quota - used_quota, used_quota = 0, update_time = NOW() WHERE tenant_key = ? AND used_quota < 0', [k]);
+          const [normalized] = await dbPool.query('SELECT tenant_key, billing_type, used_quota, max_quota, expire_time, trial_claimed FROM platform_license WHERE tenant_key = ?', [k]);
+          record = normalized[0] || record;
+        }
+        // 旧版字段捷径会直接赠送 15 次但未写 trial_claimed；同步为已领取，避免边栏重复赠送。
+        if (!record.trial_claimed && record.billing_type === 'quota' && Number(record.max_quota) === 15) {
+          const [legacy] = await dbPool.query(
+            'UPDATE platform_license SET trial_claimed = 1, update_time = NOW() WHERE tenant_key = ? AND trial_claimed = 0 AND billing_type = "quota" AND max_quota = 15',
+            [k]
+          );
+          if (legacy.affectedRows) record.trial_claimed = 1;
+        }
         const expired = record.expire_time && new Date(record.expire_time).getTime() <= now();
         const remainingQuota = record.billing_type === 'quota' ? Math.max(0, record.max_quota - record.used_quota) : null;
         const trialClaimed = Boolean(record.trial_claimed);
@@ -171,6 +189,12 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
       licenses.set(k, license);
       await saveState();
     }
+    if (license.billingType === 'quota' && Number(license.usedQuota) < 0) {
+      license.maxQuota -= Number(license.usedQuota);
+      license.usedQuota = 0;
+      protectedQuota.set(k, Math.max(Number(protectedQuota.get(k) || 0), Number(license.maxQuota)));
+      await saveState();
+    }
     const expired = license.expireTime && new Date(license.expireTime).getTime() <= now();
     const remainingQuota = license.billingType === 'quota' ? Math.max(0, license.maxQuota - license.usedQuota) : null;
     const trialClaimed = Boolean(license.trialClaimed);
@@ -182,15 +206,20 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
       try {
         const result = await sdk.queryEnterpriseStatus(k);
         const data = result?.data || result;
-        if (data && (data.registered || data.name || data.enterprise_name)) {
-          const name = data.name || data.enterprise_name || '';
-          const enterpriseType = data.enterpriseType || data.enterprise_type || '';
+        const name = String(data?.name || data?.enterprise_name || '').trim();
+        const enterpriseType = String(data?.enterpriseType || data?.enterprise_type || '').trim();
+        const registered = Boolean(data?.registered ?? name);
+        if (registered && name && name !== '-') {
           await loadState();
           enterprises.set(k, { tenantKey: k, name, enterpriseType, updatedAt: new Date(now()).toISOString() });
           await saveState();
           return { registered: true, name, enterpriseType };
         }
-      } catch (_) { }
+        return { registered: false, name: '', enterpriseType: '' };
+      } catch (error) {
+        if (error.statusCode === 404) return { registered: false, name: '', enterpriseType: '' };
+        throw new ApiError(503, 'ENTERPRISE_LOOKUP', `查询管理平台企业信息失败：${error.message}`);
+      }
     }
     if (platform?.enterpriseStatus) {
       try {
@@ -218,7 +247,9 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
         const item = { tenantKey: k, name: data?.name || name, enterpriseType: data?.enterpriseType || type, updatedAt: new Date(now()).toISOString() };
         enterprises.set(k, item); await saveState();
         return { registered: true, ...item };
-      } catch (_) { }
+      } catch (error) {
+        throw new ApiError(503, 'ENTERPRISE_REGISTER', `管理平台注册企业信息失败：${error.message}`);
+      }
     }
     if (platform?.registerEnterprise) {
       try {
@@ -248,7 +279,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
       try {
         await connection.beginTransaction();
         await connection.query('INSERT IGNORE INTO platform_license (tenant_key, billing_type, used_quota, max_quota, trial_claimed, update_time) VALUES (?, "quota", 0, 0, 0, NOW())', [k]);
-        const [result] = await connection.query('UPDATE platform_license SET max_quota = max_quota + 15, trial_claimed = 1, update_time = NOW() WHERE tenant_key = ? AND trial_claimed = 0', [k]);
+        const [result] = await connection.query('UPDATE platform_license SET max_quota = max_quota + 15, trial_claimed = 1, update_time = NOW() WHERE tenant_key = ? AND trial_claimed = 0 AND NOT (billing_type = "quota" AND max_quota = 15)', [k]);
         if (!result.affectedRows) throw new ApiError(409, 'TRIAL_ALREADY_CLAIMED', '当前企业已领取过免费试用套餐');
         await connection.commit();
       } catch (err) {
@@ -286,6 +317,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
     if (!current.active) throw new ApiError(402, 'BILLING_EXHAUSTED', '查询套餐额度已用完或已到期，请续费后再查询');
   };
   const consume = async (tenantKey, units = 1, metadata = {}) => {
+    if (!Number.isInteger(units) || units <= 0) throw new ApiError(400, 'BILLING_UNITS', '扣减次数必须为正整数');
     if (mcp) return mcp.consume({ tenantKey: key(tenantKey), units, idempotencyKey: metadata.idempotencyKey, metadata });
     if (!key(tenantKey)) throw new ApiError(401, 'TENANT_REQUIRED', '未识别当前企业');
     if (!enforce) return status(tenantKey);
@@ -324,19 +356,44 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
     const expireTime = payload?.expire_time || payload?.expireTime || null;
     if (!tenantKey || !['quota', 'duration'].includes(billingType) || !Number.isInteger(usedQuota) || usedQuota < 0 || !Number.isInteger(maxQuota) || maxQuota < 0) throw new ApiError(400, 'LICENSE', '授权同步参数无效');
 
+    await loadState();
+    let effectiveMaxQuota = maxQuota;
+    let effectiveUsedQuota = usedQuota;
+    if (billingType === 'quota') {
+      // 平台快照可能只计算退款订单；本地已领取的试用与未退款订单不能被覆盖清零。
+      if (dbPool) {
+        const [rows] = await dbPool.query(
+          'SELECT COALESCE(l.trial_claimed, 0) AS trial_claimed, COALESCE(l.used_quota, 0) AS used_quota, COALESCE(l.max_quota, 0) AS max_quota, COALESCE((SELECT SUM(o.quota) FROM platform_order o WHERE o.tenant_key = ? AND o.status = "PAID"), 0) AS paid_quota FROM platform_license l WHERE l.tenant_key = ?',
+          [tenantKey, tenantKey]
+        );
+        const legacyCoupon = Math.max(0, -Number(rows[0]?.used_quota || 0));
+        const baseline = protectedQuota.get(tenantKey) ?? Number(rows[0]?.max_quota || 0) + legacyCoupon;
+        effectiveMaxQuota = Math.max(maxQuota, baseline, (Number(rows[0]?.trial_claimed) ? 15 : 0) + Number(rows[0]?.paid_quota || 0));
+        effectiveUsedQuota = Math.max(usedQuota, Number(rows[0]?.used_quota || 0));
+      } else {
+        const paidQuota = [...orders.values()].filter(order => order.tenantKey === tenantKey && order.status === 'PAID')
+          .reduce((sum, order) => sum + Number(order.quota || 0), 0);
+        const legacyCoupon = Math.max(0, -Number(licenses.get(tenantKey)?.usedQuota || 0));
+        const baseline = protectedQuota.get(tenantKey) ?? Number(licenses.get(tenantKey)?.maxQuota || 0) + legacyCoupon;
+        effectiveMaxQuota = Math.max(maxQuota, baseline, (licenses.get(tenantKey)?.trialClaimed ? 15 : 0) + paidQuota);
+        effectiveUsedQuota = Math.max(usedQuota, Number(licenses.get(tenantKey)?.usedQuota || 0));
+      }
+      effectiveMaxQuota = Math.max(effectiveMaxQuota, effectiveUsedQuota);
+    }
+
     if (dbPool) {
       try {
         await dbPool.query(
           'INSERT INTO platform_license (tenant_key, billing_type, used_quota, max_quota, expire_time, update_time) VALUES (?, ?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE billing_type = VALUES(billing_type), used_quota = VALUES(used_quota), max_quota = VALUES(max_quota), expire_time = VALUES(expire_time), update_time = NOW()',
-          [tenantKey, billingType, usedQuota, maxQuota, expireTime]
+          [tenantKey, billingType, effectiveUsedQuota, effectiveMaxQuota, expireTime]
         );
       } catch (err) {
-        console.warn('[Billing] syncLicense 更新 MySQL 失败:', err.message);
+        throw new ApiError(503, 'BILLING_DB', `同步额度失败：${err.message}`);
       }
     }
 
-    await loadState();
-    licenses.set(tenantKey, { tenantKey, billingType, usedQuota, maxQuota, expireTime, updatedAt: new Date(now()).toISOString() });
+    if (billingType === 'quota') protectedQuota.set(tenantKey, effectiveMaxQuota);
+    licenses.set(tenantKey, { ...licenses.get(tenantKey), tenantKey, billingType, usedQuota: effectiveUsedQuota, maxQuota: effectiveMaxQuota, expireTime, updatedAt: new Date(now()).toISOString() });
     await saveState();
     return status(tenantKey);
   };
@@ -347,7 +404,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
     if (!plan) throw new ApiError(400, 'PLAN_NOT_FOUND', '套餐不存在或已下架');
     if (mcp) return mcp.createOrder({ tenantKey: key(tenantKey), planId: plan.plan_id, plan, amount: plan.price, payChannel });
     const orderId = `ORD_${Date.now()}_${randomBytes(3).toString('hex').toUpperCase()}`;
-    const order = { orderId, tenantKey: key(tenantKey), planId, amount: plan.price, payChannel: payChannelLabel(payChannel), status: 'PENDING', createdAt: new Date(now()).toISOString() };
+    const order = { orderId, tenantKey: key(tenantKey), planId, quota: plan.billing_type === 'quota' ? plan.quota : 0, amount: plan.price, payChannel: payChannelLabel(payChannel), status: 'PENDING', createdAt: new Date(now()).toISOString() };
 
     if (dbPool) {
       try {
@@ -366,38 +423,93 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
     await saveState();
     return { ...order, paymentConfigured: Boolean(process.env.PAYMENT_MODE || process.env.WECHAT_MCH_ID) };
   };
-  const refund = async orderId => {
-    if (mcp) return mcp.refund({ orderId });
-    if (dbPool) {
-      try {
-        await dbPool.query('UPDATE platform_order SET status = "REFUNDED", updated_at = NOW() WHERE order_id = ?', [orderId]);
-      } catch (err) {
-        console.warn('[Billing] refund 更新 MySQL 失败:', err.message);
-      }
-    }
+  // SDK 退款通知只改变订单状态；额度由随后到达的授权快照更新。
+  const markRefunded = async orderId => {
     await loadState();
-    const order = orders.get(orderId);
+    const order = await getOrder(orderId);
     if (!order) throw new ApiError(404, 'ORDER_NOT_FOUND', '订单不存在');
     if (order.status === 'REFUNDED') return { tenantKey: order.tenantKey, alreadyRefunded: true };
-    order.status = 'REFUNDED'; order.updatedAt = new Date(now()).toISOString();
-
-    const plan = (await getConfig()).plans.find(p => p.plan_id === order.planId);
-    if (plan && plan.billing_type === 'quota') {
-      const k = key(order.tenantKey);
-      if (dbPool) {
-        try {
-          await dbPool.query('UPDATE platform_license SET max_quota = GREATEST(used_quota, max_quota - ?), update_time = NOW() WHERE tenant_key = ?', [plan.quota, k]);
-        } catch (err) {
-          console.warn('[Billing] refund 扣减 MySQL 配额失败:', err.message);
-        }
-      }
-      const lic = licenses.get(k);
-      if (lic) {
-        lic.maxQuota = Math.max(lic.usedQuota || 0, (lic.maxQuota || 0) - plan.quota);
-        lic.updatedAt = new Date(now()).toISOString();
-      }
+    if (order.status !== 'PAID') throw new ApiError(409, 'ORDER_NOT_PAID', '仅已支付订单可以退款');
+    let quota = Number(order.quota || 0);
+    let currentMax = Number(licenses.get(key(order.tenantKey))?.maxQuota || 0);
+    let currentUsed = Number(licenses.get(key(order.tenantKey))?.usedQuota || 0);
+    if (dbPool) {
+      const connection = await dbPool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [rows] = await connection.query('SELECT status, tenant_key, quota FROM platform_order WHERE order_id = ? FOR UPDATE', [orderId]);
+        const savedOrder = rows[0];
+        if (!savedOrder) throw new ApiError(404, 'ORDER_NOT_FOUND', '订单不存在');
+        if (savedOrder.status === 'REFUNDED') { await connection.rollback(); return { tenantKey: savedOrder.tenant_key, alreadyRefunded: true }; }
+        if (savedOrder.status !== 'PAID') throw new ApiError(409, 'ORDER_NOT_PAID', '仅已支付订单可以退款');
+        quota = Number(savedOrder.quota || 0);
+        const [licensesRows] = await connection.query('SELECT used_quota, max_quota FROM platform_license WHERE tenant_key = ? FOR UPDATE', [savedOrder.tenant_key]);
+        if (!licensesRows[0]) throw new ApiError(409, 'LICENSE_NOT_FOUND', '未找到该企业额度记录');
+        currentMax = Number(licensesRows[0].max_quota);
+        currentUsed = Number(licensesRows[0].used_quota);
+        if (currentMax - currentUsed < quota) throw new ApiError(409, 'REFUND_QUOTA_USED', '该订单对应的未使用次数不足，无法全额退款');
+        await connection.query('UPDATE platform_order SET status = "REFUNDED", updated_at = NOW() WHERE order_id = ?', [orderId]);
+        await connection.commit();
+      } catch (err) {
+        await connection.rollback();
+        if (err instanceof ApiError) throw err;
+        throw new ApiError(503, 'BILLING_DB', `标记退款订单失败：${err.message}`);
+      } finally { connection.release(); }
+    } else if (currentMax - currentUsed < quota) {
+      throw new ApiError(409, 'REFUND_QUOTA_USED', '该订单对应的未使用次数不足，无法全额退款');
     }
-
+    const tenantKey = key(order.tenantKey);
+    protectedQuota.set(tenantKey, Math.max(0, currentUsed, currentMax - Math.min(0, currentUsed) - quota));
+    order.status = 'REFUNDED';
+    order.updatedAt = new Date(now()).toISOString();
+    orders.set(orderId, order);
+    await saveState();
+    return { tenantKey, alreadyRefunded: false };
+  };
+  const refund = async orderId => {
+    if (mcp) return mcp.refund({ orderId });
+    await loadState();
+    const order = await getOrder(orderId);
+    if (!order) throw new ApiError(404, 'ORDER_NOT_FOUND', '订单不存在');
+    if (order.status === 'REFUNDED') return { tenantKey: order.tenantKey, alreadyRefunded: true };
+    if (order.status !== 'PAID') throw new ApiError(409, 'ORDER_NOT_PAID', '仅已支付订单可以退款');
+    const plan = (await getConfig()).plans.find(p => p.plan_id === order.planId);
+    const grantedQuota = Number(order.quota ?? (plan?.billing_type === 'quota' ? plan.quota : 0));
+    let nextQuotaFloor;
+    if (dbPool) {
+      const connection = await dbPool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [rows] = await connection.query('SELECT status, tenant_key, quota FROM platform_order WHERE order_id = ? FOR UPDATE', [orderId]);
+        const currentOrder = rows[0];
+        if (!currentOrder) throw new ApiError(404, 'ORDER_NOT_FOUND', '订单不存在');
+        if (currentOrder.status === 'REFUNDED') { await connection.rollback(); return { tenantKey: currentOrder.tenant_key, alreadyRefunded: true }; }
+        if (currentOrder.status !== 'PAID') throw new ApiError(409, 'ORDER_NOT_PAID', '仅已支付订单可以退款');
+        const quota = Number(currentOrder.quota || 0);
+        if (quota > 0) {
+          const [licenses] = await connection.query('SELECT used_quota, max_quota FROM platform_license WHERE tenant_key = ? FOR UPDATE', [currentOrder.tenant_key]);
+          if (!licenses[0] || Number(licenses[0].max_quota) - Number(licenses[0].used_quota) < quota) throw new ApiError(409, 'REFUND_QUOTA_USED', '该订单对应的未使用次数不足，无法全额退款');
+          nextQuotaFloor = Number(licenses[0].max_quota) - Math.min(0, Number(licenses[0].used_quota)) - quota;
+          await connection.query('UPDATE platform_license SET max_quota = max_quota - ?, update_time = NOW() WHERE tenant_key = ?', [quota, currentOrder.tenant_key]);
+        }
+        await connection.query('UPDATE platform_order SET status = "REFUNDED", updated_at = NOW() WHERE order_id = ?', [orderId]);
+        await connection.commit();
+      } catch (err) {
+        await connection.rollback();
+        if (err instanceof ApiError) throw err;
+        throw new ApiError(503, 'BILLING_DB', `退款配额更新失败：${err.message}`);
+      } finally { connection.release(); }
+    } else if (grantedQuota > 0) {
+      const license = licenses.get(key(order.tenantKey));
+      if (!license || license.maxQuota - license.usedQuota < grantedQuota) throw new ApiError(409, 'REFUND_QUOTA_USED', '该订单对应的未使用次数不足，无法全额退款');
+    }
+    order.status = 'REFUNDED'; order.updatedAt = new Date(now()).toISOString();
+    if (grantedQuota > 0) {
+      const license = licenses.get(key(order.tenantKey));
+      if (license) { license.maxQuota -= grantedQuota; license.updatedAt = new Date(now()).toISOString(); }
+    }
+    orders.set(orderId, order);
+    protectedQuota.set(key(order.tenantKey), nextQuotaFloor ?? Math.max(0, Number(licenses.get(key(order.tenantKey))?.maxQuota || 0)));
     await saveState();
     return { tenantKey: order.tenantKey, alreadyRefunded: false };
   };
@@ -410,6 +522,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
             orderId: rows[0].order_id,
             tenantKey: rows[0].tenant_key,
             planId: rows[0].plan,
+            quota: Number(rows[0].quota || 0),
             amount: Number(rows[0].amount),
             status: rows[0].status,
             payChannel: rows[0].pay_channel,
@@ -464,6 +577,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
             orderId: rows[0].order_id,
             tenantKey: rows[0].tenant_key,
             planId: rows[0].plan,
+            quota: Number(rows[0].quota || 0),
             amount: Number(rows[0].amount),
             status: rows[0].status,
             payChannel: rows[0].pay_channel,
@@ -477,6 +591,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
       const currentLicense = await status(order.tenantKey);
       return { alreadyPaid: true, order, license: currentLicense };
     }
+    if (order.status === 'REFUNDED') throw new ApiError(409, 'ORDER_REFUNDED', '已退款订单不能再次入账');
     order.status = 'PAID';
     order.payChannel = payChannelLabel(payChannel);
     order.transactionId = transactionId || `TXN${Date.now()}`;
@@ -485,6 +600,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
 
     const config = await getConfig();
     const plan = config.plans.find(item => item.plan_id === order.planId);
+    const orderQuota = Number(order.quota ?? (plan?.billing_type === 'quota' ? plan.quota : 0));
 
     if (dbPool) {
       try {
@@ -492,10 +608,10 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
           'UPDATE platform_order SET status = "PAID", third_party_no = ?, pay_channel = ?, updated_at = NOW() WHERE order_id = ?',
           [order.transactionId, payChannelLabel(payChannel), orderId]
         );
-        if (plan && plan.billing_type === 'quota') {
+        if (orderQuota > 0) {
           await dbPool.query(
             'INSERT INTO platform_license (tenant_key, billing_type, used_quota, max_quota, update_time) VALUES (?, "quota", 0, ?, NOW()) ON DUPLICATE KEY UPDATE max_quota = max_quota + ?, update_time = NOW()',
-            [key(order.tenantKey), plan.quota, plan.quota]
+            [key(order.tenantKey), orderQuota, orderQuota]
           );
         } else if (plan && plan.billing_type === 'duration') {
           await dbPool.query(
@@ -508,7 +624,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
       }
     }
 
-    if (plan && plan.billing_type === 'quota') {
+    if (orderQuota > 0) {
       const k = key(order.tenantKey);
       let lic = licenses.get(k);
       if (!lic) {
@@ -522,7 +638,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
         };
         licenses.set(k, lic);
       }
-      lic.maxQuota = (lic.maxQuota || 0) + plan.quota;
+      lic.maxQuota = (lic.maxQuota || 0) + orderQuota;
       lic.updatedAt = new Date(now()).toISOString();
     }
     if (plan && plan.billing_type === 'duration') {
@@ -547,40 +663,60 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
     if (!mcp) throw new ApiError(503, 'PAYMENT_NOT_CONFIGURED', '订单查询需要配置 MCP 计费服务');
     return mcp.orderStatus({ orderId });
   };
+  const creditCoupon = async (tenantKey, code, quota, before) => {
+    if (mcp) return status(tenantKey);
+    if (!Number.isSafeInteger(quota) || quota <= 0) return status(tenantKey);
+    await loadState();
+    const creditKey = `coupon-credit:${tenantKey}:${code}`;
+    if (consumed.has(creditKey)) return status(tenantKey);
+    const targetMax = Number(before.maxQuota || 0) + quota;
+    const current = await status(tenantKey);
+    if (current.billingType === 'quota' && Number(current.maxQuota) < targetMax) {
+      if (dbPool) {
+        await dbPool.query('UPDATE platform_license SET max_quota = GREATEST(max_quota, ?), update_time = NOW() WHERE tenant_key = ?', [targetMax, tenantKey]);
+      }
+      const license = licenses.get(tenantKey) || { tenantKey, billingType: 'quota', usedQuota: Number(current.usedQuota || 0) };
+      license.maxQuota = Math.max(Number(license.maxQuota || 0), targetMax);
+      licenses.set(tenantKey, license);
+    }
+    protectedQuota.set(tenantKey, Math.max(Number(protectedQuota.get(tenantKey) || 0), Number(current.maxQuota || 0), targetMax));
+    consumed.add(creditKey);
+    await saveState();
+    return status(tenantKey);
+  };
   const redeemCoupon = async ({ tenantKey, couponCode }) => {
     const k = key(tenantKey);
     if (!k) throw new ApiError(401, 'TENANT_REQUIRED', '未识别当前企业');
     const code = String(couponCode || '').trim();
     if (!code) throw new ApiError(400, 'COUPON_REQUIRED', '请输入有效的兑换码');
+    const before = await status(k);
 
     if (sdk?.redeemCoupon) {
+      let result;
       try {
-        const result = await sdk.redeemCoupon(k, code);
-        const data = result?.data || result;
-        const granted = data?.quota || data?.granted_quota || (typeof data === 'number' ? data : 0);
-        if (granted > 0) {
-          await consume(k, -granted, { reason: `coupon:${code}` });
-        }
-        return { ok: true, quota: granted, message: result?.message || `成功兑换 ${granted || '套餐'} 额度！`, license: await status(k) };
+        result = await sdk.redeemCoupon(k, code);
       } catch (err) {
         if (err.statusCode && err.statusCode < 500) {
           throw new ApiError(err.statusCode, 'COUPON_INVALID', err.message);
         }
       }
+      if (result !== undefined) {
+        const data = result?.data || result;
+        const granted = data?.quota || data?.granted_quota || (typeof data === 'number' ? data : 0);
+        return { ok: true, quota: granted, message: result?.message || `成功兑换 ${granted || '套餐'} 额度！`, license: await creditCoupon(k, code, Number(granted), before) };
+      }
     }
 
     if (platform?.redeemCoupon) {
+      let result;
       try {
-        const result = await platform.redeemCoupon({ tenantKey: k, couponCode: code });
-        if (result && result.quota) {
-          await consume(k, -result.quota, { reason: `coupon:${code}` });
-        }
-        return { ok: true, message: result?.message || '兑换成功', license: await status(k) };
+        result = await platform.redeemCoupon({ tenantKey: k, couponCode: code });
       } catch (err) {
         if (!(err instanceof ApiError && err.status === 503)) {
           throw err;
         }
       }
+      if (result !== undefined) return { ok: true, message: result?.message || '兑换成功', license: await creditCoupon(k, code, Number(result?.quota || result?.granted_quota || 0), before) };
     }
 
     await loadState();
@@ -598,6 +734,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
       lic.updatedAt = new Date(now()).toISOString();
     }
     licenses.set(k, lic);
+    protectedQuota.set(k, Math.max(Number(protectedQuota.get(k) || 0), Number(lic.maxQuota || 0)));
 
     if (dbPool) {
       try {
@@ -619,5 +756,5 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
       try { await p.end(); } catch (_) { }
     }
   };
-  return { close, enforce, external: Boolean(mcp), getConfig, setConfig, status, enterpriseStatus, registerEnterprise, claimTrial, redeemCoupon, assertAvailable, consume, syncLicense, createOrder, refund, paymentCallback, orderStatus, checkAndConsume, payOrder, getOrder };
+  return { close, enforce, external: Boolean(mcp), getConfig, setConfig, status, enterpriseStatus, registerEnterprise, claimTrial, redeemCoupon, assertAvailable, consume, syncLicense, createOrder, refund, markRefunded, paymentCallback, orderStatus, checkAndConsume, payOrder, getOrder };
 }

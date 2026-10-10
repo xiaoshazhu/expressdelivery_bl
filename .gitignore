@@ -9,6 +9,8 @@ dist/*
 !dist/index.html
 !dist/assets/
 !dist/assets/**
+!dist/guide/
+!dist/guide/**
 !dist/pay.html
 .env
 .DS_Store

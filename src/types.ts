@@ -1,5 +1,5 @@
 export type Row = { id: string; number: string; info: string; carrier?: string; phone?: string; state?: 'success' | 'error' | 'loading'; error?: string };
-export type Mapping = { number: string; info: string; carrier?: string; phone?: string };
+export type Mapping = { number: string; info: string; carrier?: string; phone?: string; time?: string };
 export type Field = { id: string; name: string; type: number };
 export type QueryResult = {
   number: string;

@@ -1,31 +1,41 @@
 .sidebar-app {
   --panel: #fff;
-  --line: #e3e8ef;
-  --muted: #788498;
+  --line: #dee0e3;
+  --muted: #646a73;
   max-width: 560px;
-  padding: 16px;
+  min-height: 100vh;
+  padding: 0;
   margin: 0 auto;
-  color: #27354a;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: #1f2329;
+  background: #f7f8fa;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
 }
+.sidebar-topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 8px; height: 44px; margin: 0; padding: 0 12px 0 14px; border-bottom: 1px solid var(--line); background: #fff; }
+.sidebar-topbar-icon { width: 18px; color: #646a73; font-size: 19px; line-height: 1; }
+.sidebar-topbar strong { margin-right: auto; font-size: 14px; font-weight: 500; }
+.sidebar-topbar button { height: 24px; padding: 0 8px; border: 0; border-radius: 4px; background: #f5f6f7; color: #646a73; font-size: 12px; }
+.sidebar-topbar button:hover { background: #e9edf2; color: #3370ff; }
+.sidebar-content { display: block; padding: 12px; }
 .sidebar-app h1 { font-size: 19px; }
 .sidebar-heading { display: flex; justify-content: space-between; align-items: flex-start; margin: 0 0 14px; }
 .sidebar-heading p { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .sidebar-badge { font-size: 11px; color: #456dc4; background: #eaf0ff; padding: 4px 8px; border-radius: 6px; font-weight: 500; }
 .sidebar-warning { font-size: 12px; line-height: 1.7; border: 1px solid #efd99b; background: #fff7e4; color: #866625; padding: 10px 12px; border-radius: 7px; margin-bottom: 14px; }
 .sidebar-live { font-size: 12px; line-height: 1.7; border: 1px solid #a9e1c6; background: #ecf9f3; color: #277658; padding: 10px 12px; border-radius: 7px; margin-bottom: 14px; }
-.sidebar-panel { padding: 15px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; margin: 12px 0; overflow-wrap: anywhere; }
+.sidebar-panel { padding: 12px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; margin: 0 0 12px; overflow-wrap: anywhere; }
 .sidebar-panel h2 { font-size: 14px; margin: 0 0 14px; color: #1d2129; }
 .sidebar-panel strong { font-size: 15px; }
 .sidebar-panel ol { padding-left: 20px; font-size: 13px; line-height: 1.9; }
 .sidebar-panel summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 .sidebar-help { font-size: 12px; line-height: 1.8; color: var(--muted); margin: 8px 0; }
 .sidebar-message { background: #eaf1ff; color: #426398; padding: 10px 12px; border-radius: 7px; font-size: 12px; line-height: 1.8; margin: 12px 0; overflow-wrap: anywhere; }
-.sidebar-app input, .sidebar-app select, .sidebar-app textarea { background: var(--panel); color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 13px; width: 100%; box-sizing: border-box; }
+.sidebar-app input, .sidebar-app select, .sidebar-app textarea { background: var(--panel); color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 13px; width: 100%; box-sizing: border-box; }
+.sidebar-app input:not([type="checkbox"]):not([type="radio"]), .sidebar-app select { min-height: 32px; }
+.sidebar-app input:focus-visible, .sidebar-app select:focus-visible, .sidebar-app textarea:focus-visible { outline: none; border-color: #3370ff; box-shadow: 0 0 0 2px rgba(51,112,255,.15); }
 .sidebar-app label { display: block; font-size: 12px; margin-bottom: 10px; color: inherit; }
 .sidebar-app button { cursor: pointer; font-family: inherit; }
-.sidebar-app button.primary { background: #1677ff; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font-weight: 500; font-size: 13px; }
-.sidebar-app button.primary:hover { background: #0958d9; }
+.sidebar-app button.primary { background: #3370ff; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font-weight: 500; font-size: 13px; }
+.sidebar-app button.primary:hover { background: #245bdb; }
 .sidebar-app button.wide { width: 100%; margin: 6px 0; border-radius: 6px; padding: 8px 12px; font-size: 13px; border: 1px solid var(--line); background: #fff; color: inherit; }
 .sidebar-toggle { display: flex !important; align-items: center; gap: 8px; margin: 14px 0 !important; cursor: pointer; }
 .sidebar-toggle input { width: auto !important; margin: 0 !important; }
@@ -54,50 +64,108 @@
 @keyframes sidebar-announcement-scroll { 0% { transform: translateX(100%); } 100% { transform: translateX(-100%); } }
 
 /* 2. 套餐额度卡片（精准对齐电子签名截图） */
-.sidebar-billing-card { position: relative; padding: 14px 16px; margin: 0 0 14px; border: 1px solid #c8e0fe; border-radius: 8px; background: #f0f7ff; color: #27354a; box-shadow: 0 1px 3px rgba(0,0,0,0.03); }
-.sidebar-billing-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.sidebar-billing-title-group { display: flex; align-items: center; gap: 6px; color: #2f83ed; font-size: 16px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
-.sidebar-billing-title-group svg { flex-shrink: 0; }
-.sidebar-refresh-btn { border: 1px solid #cce1fb; background: #ffffff; color: #2f83ed; width: 26px; height: 26px; cursor: pointer; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; padding: 0; transition: all 0.2s; box-shadow: 0 1px 2px rgba(47, 131, 237, 0.08); flex-shrink: 0; }
+.sidebar-billing-card { position: relative; padding: 12px; margin: 0 0 12px; border: 1px solid #d3e2ff; border-radius: 8px; background: linear-gradient(180deg, #eef4ff 0%, #fff 76%); color: #1f2329; }
+.sidebar-billing-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; flex-wrap: nowrap; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.sidebar-billing-header::-webkit-scrollbar { display: none; }
+.sidebar-billing-title-group { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; color: #245bdb; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.sidebar-billing-title-group > svg { width: 16px; height: 16px; flex-shrink: 0; }
+.sidebar-refresh-btn { border: 1px solid #cce1fb; background: #ffffff; color: #2f83ed; width: 22px; height: 22px; cursor: pointer; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; padding: 0; transition: all 0.2s; box-shadow: 0 1px 2px rgba(47, 131, 237, 0.08); flex-shrink: 0; }
 .sidebar-refresh-btn:hover { border-color: #1677ff; color: #1677ff; background: #eaf4ff; transform: scale(1.05); }
 .sidebar-refresh-btn:active { background: #d0e7ff; transform: scale(0.95); }
 .sidebar-refresh-btn.is-spinning svg { transform-origin: center; animation: sidebar-spin 0.65s linear infinite; }
 @keyframes sidebar-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.sidebar-billing-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
-.sidebar-billing-actions-row { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.btn-auth-config { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #d9e1ec; border-radius: 4px; background: #fff; color: #4e5969; padding: 4px 8px; font-size: 12px; font-weight: 500; white-space: nowrap; flex-shrink: 0; line-height: 1.4; }
+.sidebar-billing-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; flex-wrap: nowrap; justify-content: flex-end; }
+.btn-auth-config { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #b8d0ff; border-radius: 4px; background: #fff; color: #245bdb; padding: 3px 4px; font-size: 11px; font-weight: 500; white-space: nowrap; line-height: 1.4; }
 .btn-auth-config:hover { border-color: #1677ff; color: #1677ff; }
-.btn-recharge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #91c5ff; border-radius: 4px; background: #fff; color: #1677ff; padding: 4px 10px; font-size: 12px; font-weight: 500; white-space: nowrap; flex-shrink: 0; line-height: 1.4; }
-.btn-recharge:hover { background: #eaf4ff; }
-.btn-coupon { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #f6d895; border-radius: 4px; background: #fff9ea; color: #b37714; padding: 3px 8px; font-size: 12px; font-weight: 500; white-space: nowrap; flex-shrink: 0; line-height: 1.4; }
+.btn-recharge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #3370ff; border-radius: 4px; background: #3370ff; color: #fff; padding: 3px 4px; font-size: 11px; font-weight: 500; white-space: nowrap; line-height: 1.4; }
+.btn-recharge:hover { background: #245bdb; }
+.btn-coupon { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #ffc7bd; border-radius: 4px; background: #fff2f0; color: #d4380d; padding: 3px 4px; font-size: 11px; font-weight: 500; white-space: nowrap; line-height: 1.4; }
 .btn-coupon:hover { background: #fff1d0; }
+@media (max-width: 360px) {
+  .sidebar-billing-header { gap: 2px; }
+  .sidebar-billing-title-group { gap: 3px; font-size: 13px; }
+  .sidebar-billing-title-group > svg { width: 14px; height: 14px; }
+  .sidebar-refresh-btn { width: 20px; height: 20px; }
+  .sidebar-billing-actions { gap: 2px; }
+  .btn-auth-config, .btn-recharge, .btn-coupon { padding: 3px 2px; font-size: 10px; }
+}
 .sidebar-billing-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0 6px; font-size: 13px; color: #4e5969; }
 .sidebar-billing-quota-text { display: flex; align-items: baseline; white-space: nowrap; }
-.quota-highlight { color: #f53f3f; font-size: 24px; font-weight: 700; margin: 0 4px; line-height: 1; }
+.quota-highlight { color: #d4380d; font-size: 22px; font-weight: 700; margin: 0 4px; line-height: 1; }
 .sidebar-billing-divider { border-top: 1px dashed #cfe2f8; margin: 10px 0 8px; }
 .sidebar-billing-meta { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #4e5969; }
 .sidebar-billing-trial-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #cfe2f8; }
 .sidebar-billing-trial { border: 1px solid #ffadd2; background: #fff0f6; color: #eb2f96; padding: 3px 9px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: 500; }
+.sidebar-trial-fold { margin-top: 10px; border-top: 1px dashed #b8d0ff; }
+.sidebar-trial-toggle { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 8px 2px; border: 0; background: transparent; color: #a8500a; font-size: 13px; text-align: left; }
+.sidebar-trial-toggle span:last-child { color: #646a73; font-size: 11px; }
+.sidebar-trial-content { padding: 10px; border: 1px solid #ffe4c2; border-radius: 6px; background: #fff9f0; font-size: 13px; color: #8a6640; }
+.sidebar-trial-content p { margin: 0 0 8px; }
+.sidebar-trial-content button { width: 100%; }
 
 /* 3. 温馨提示卡片（精准对齐电子签名截图） */
-.sidebar-tips-card { background: #fafbfc; border: 1px solid #ebedf0; border-radius: 8px; padding: 14px 16px; margin: 0 0 14px; }
+.sidebar-tips-card { background: #fff; border: 1px solid #dee0e3; border-radius: 8px; padding: 12px; margin: 0 0 12px; }
 .sidebar-tips-title { font-size: 14px; font-weight: 600; color: #4e5969; margin-bottom: 8px; }
 .sidebar-tips-alert { font-size: 13px; font-weight: 600; color: #d9363e; margin-bottom: 8px; line-height: 1.5; }
 .sidebar-tips-list { padding-left: 0; list-style: none; margin: 0; font-size: 12px; color: #606266; line-height: 1.8; }
 .sidebar-tips-list li { margin-bottom: 2px; }
+.sidebar-tips-heading { display: flex; align-items: center; justify-content: space-between; position: relative; }
+.sidebar-tips-heading .sidebar-tips-title { margin: 0; }
+.sidebar-tips-more { position: relative; }
+.sidebar-tips-more summary { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid #dee0e3; border-radius: 50%; color: #646a73; cursor: pointer; font-size: 12px; list-style: none; }
+.sidebar-tips-more summary::-webkit-details-marker { display: none; }
+.sidebar-tips-more ol { position: absolute; top: 24px; right: 0; z-index: 5; width: min(262px, 75vw); margin: 0; padding: 10px 12px 10px 28px; border: 1px solid #dee0e3; border-radius: 6px; background: #fff; box-shadow: 0 6px 18px rgba(31,35,41,.14); color: #646a73; font-size: 12px; line-height: 1.9; }
+.sidebar-tips-text { margin: 6px 0 0; font-size: 12px; color: #646a73; line-height: 1.8; }
+.sidebar-tips-text strong { color: #d4380d; font-weight: 400; }
+.sidebar-section-heading { display: flex; align-items: center; gap: 8px; }
+.sidebar-section-heading h2 { margin: 0 auto 0 0; font-size: 15px; }
+.sidebar-status { padding: 2px 6px; border-radius: 4px; background: #fff7e8; color: #d4860a; font-size: 12px; white-space: nowrap; }
+.sidebar-status.ready { background: #e8f6ee; color: #2b8c5a; }
+.sidebar-auth-needed { margin-top: 10px; padding: 10px 11px; border: 1px solid #ffc7bd; border-radius: 6px; background: #fff2f0; color: #d4380d; font-size: 13px; line-height: 1.7; }
+.sidebar-auth-needed p { margin: 0 0 8px; }
+.sidebar-auth-needed button { width: 100%; }
+.sidebar-field-box { margin-top: 12px; border: 1px solid #dee0e3; border-radius: 6px; background: #fafbfc; overflow: hidden; }
+.sidebar-field-box.disabled { opacity: .5; }
+.sidebar-field-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 12px; border: 0; background: transparent; color: #1f2329; text-align: left; font-size: 14px; font-weight: 600; }
+.sidebar-field-toggle .sidebar-status { margin-left: auto; font-weight: 400; }
+.sidebar-field-toggle span:last-child { color: #8f959e; font-size: 11px; }
+.sidebar-field-body { padding: 0 12px 12px; }
+.sidebar-known-fields { margin: 5px 0 0; color: #646a73; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.sidebar-field-body label { margin: 10px 0 0; color: #646a73; }
+.sidebar-field-body label input { display: block; margin-top: 5px; }
+.sidebar-field-actions { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 12px; }
+.sidebar-field-actions button { min-height: 36px; padding: 6px; font-size: 13px; }
+.sidebar-field-summary { padding: 0 12px 10px; color: #646a73; font-size: 12px; line-height: 1.7; }
+.sidebar-disconnect { margin-top: 8px; padding: 3px 0; border: 0; background: transparent; color: #8f959e; font-size: 12px; }
+.sidebar-disconnect:hover { color: #d4380d; }
+.sidebar-query-card h2 { margin-bottom: 10px; font-size: 15px; }
+.sidebar-segmented { display: flex; gap: 3px; padding: 3px; border-radius: 7px; background: #f2f3f5; }
+.sidebar-segmented button { flex: 1; height: 30px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: #646a73; font-size: 13px; }
+.sidebar-segmented button.selected { background: #fff; color: #245bdb; box-shadow: 0 1px 3px rgba(31,35,41,.1); }
+.sidebar-query-scopes { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.sidebar-query-scopes label { display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 0; padding: 0 10px; border: 1px solid #dee0e3; border-radius: 6px; background: #fff; color: #1f2329; font-size: 13px; cursor: pointer; }
+.sidebar-query-scopes label:has(input:checked) { border-color: #3370ff; background: #f0f4ff; }
+.sidebar-query-scopes input { flex: 0 0 14px; width: 14px; margin: 0; accent-color: #3370ff; }
+.sidebar-query-scopes label span { margin-left: auto; color: #646a73; font-size: 12px; }
+.sidebar-query-cost { display: flex; justify-content: space-between; margin-top: 10px; padding-top: 9px; border-top: 1px solid #e5e6eb; color: #646a73; font-size: 12px; }
+.sidebar-quota-warning { margin: 9px 0 0; padding: 9px 11px; border: 1px solid #ffccc7; border-radius: 6px; background: #fff2f0; color: #cf1322; font-size: 12px; line-height: 1.5; }
+.sidebar-run-query { width: 100%; min-height: 36px; margin-top: 10px; }
+.sidebar-auto-status { margin-top: 10px; padding: 10px; border: 1px solid #d3e2ff; border-radius: 6px; background: #f0f4ff; color: #245bdb; font-size: 13px; }
+.sidebar-auto-status button { display: block; width: 100%; margin-top: 8px; padding: 7px; }
+.sidebar-stop-query { width: 100%; margin-top: 8px; }
 
-/* 4. 反馈与支持卡片（精准对齐电子签名截图） */
-.sidebar-feedback-card { background: #f8f9fb; border: 1px solid #e5e6eb; border-radius: 8px; padding: 16px; margin: 16px 0; }
-.sidebar-feedback-title { font-size: 14px; font-weight: 600; color: #1d2129; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
-.sidebar-feedback-desc { font-size: 12px; color: #4e5969; line-height: 1.6; margin-bottom: 12px; }
+/* 4. 反馈与支持卡片 */
+.sidebar-feedback-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0 0 12px; }
+.sidebar-feedback-title { font-size: 14px; font-weight: 600; color: inherit; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.sidebar-feedback-desc { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
 .sidebar-feedback-action { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.sidebar-feedback-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 24px; border: 1px solid #91c5ff; background: #eaf4ff; color: #1677ff; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
-.sidebar-feedback-btn:hover { background: #d0e7ff; }
+.sidebar-feedback-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 24px; border: 1px solid #3370ff; background: #fff; color: #3370ff; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+.sidebar-feedback-btn:hover { background: #f0f4ff; }
 .sidebar-feedback-sub { font-size: 12px; color: #86909c; text-align: center; }
 
 /* 模态框体系（吸顶固定头部，关闭按钮永远可见，滑动不遮挡） */
 .sidebar-modal-backdrop { position: fixed; inset: 0; z-index: 99; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
-.sidebar-modal { position: relative; width: min(440px, 100%); max-height: calc(100vh - 40px); display: flex; flex-direction: column; padding: 0; border-radius: 10px; background: #fff; border: 1px solid var(--line); box-shadow: 0 16px 36px rgba(0, 0, 0, 0.16); box-sizing: border-box; overflow: hidden; }
+.sidebar-modal { position: relative; width: min(440px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; padding: 0; border-radius: 8px; background: #fff; border: 1px solid var(--line); box-shadow: 0 6px 24px rgba(31, 35, 41, 0.16); box-sizing: border-box; overflow: hidden; }
 .sidebar-modal-header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid #ebedf0; background: #fff; flex-shrink: 0; }
 .sidebar-modal-header h2 { font-size: 16px; font-weight: 600; margin: 0; color: #1d2129; }
 .sidebar-modal-close { border: 0; background: transparent; font-size: 20px; line-height: 1; color: #86909c; cursor: pointer; padding: 4px 6px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; transition: all 0.15s; }
@@ -105,17 +173,26 @@
 .sidebar-modal-body { padding: 16px 18px 20px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .sidebar-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .sidebar-modal-actions button { min-width: 80px; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; border: 1px solid var(--line); background: #fff; color: inherit; cursor: pointer; }
-.sidebar-modal-actions button.primary { background: #1677ff; color: #fff; border: 0; }
-.sidebar-modal-actions button.primary:hover { background: #0958d9; }
+.sidebar-modal-actions button.primary { background: #3370ff; color: #fff; border: 0; }
+.sidebar-modal-actions button.primary:hover { background: #245bdb; }
 .sidebar-modal-actions button:disabled { opacity: 0.55; cursor: not-allowed; background: #f2f3f5; color: #86909c; border-color: var(--line); }
-.sidebar-modal-actions button.primary:disabled { background: #1677ff; color: #fff; opacity: 0.55; border: 0; }
+.sidebar-modal-actions button.primary:disabled { background: #3370ff; color: #fff; opacity: 0.55; border: 0; }
+.sidebar-auth-modal .sidebar-modal-actions { flex: 0 0 auto; margin: 0; padding: 12px 18px; border-top: 1px solid #dee0e3; background: #fff; }
 
 /* 系统初始化配置弹窗 (授权码配置) */
-.sidebar-auth-alert { background: #fffbe6; border: 1px solid #ffe58f; border-radius: 6px; padding: 10px 12px; color: #d48806; font-size: 12px; line-height: 1.6; margin-bottom: 16px; }
-.sidebar-auth-guide { margin-top: 18px; padding-top: 14px; border-top: 1px solid #f0f0f0; }
-.sidebar-auth-guide h4 { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: #1d2129; }
-.sidebar-auth-steps { list-style: none; padding-left: 0; margin: 0; font-size: 12px; color: #4e5969; line-height: 1.8; }
-.sidebar-auth-step-num { display: inline-block; width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 50%; background: #1677ff; color: #fff; font-size: 11px; margin-right: 6px; }
+.sidebar-auth-alert { background: #fff9f0; border: 1px solid #ffe4c2; border-radius: 6px; padding: 10px 12px; color: #a8500a; font-size: 13px; line-height: 1.7; margin-bottom: 14px; }
+.sidebar-auth-guide { margin-top: 16px; }
+.sidebar-auth-guide h4 { font-size: 14px; font-weight: 600; margin: 0 0 10px; color: #1f2329; }
+.sidebar-auth-steps { display: flex; flex-direction: column; gap: 12px; list-style: none; padding: 0; margin: 0; font-size: 13px; color: #1f2329; }
+.sidebar-auth-step-title { display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; }
+.sidebar-auth-step-num { display: inline-flex; flex: 0 0 18px; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: #3370ff; color: #fff; font-size: 11px; }
+.sidebar-auth-step img { display: block; width: 100%; height: auto; margin-top: 6px; border: 1px solid #dee0e3; border-radius: 6px; background: #f7f8fa; }
+.sidebar-auth-error { margin: 8px 0; padding: 9px 11px; border: 1px solid #ffc7bd; border-radius: 6px; background: #fff2f0; color: #d4380d; font-size: 12px; line-height: 1.6; }
+.sidebar-auth-loading { margin: 8px 0; padding: 9px 11px; border: 1px solid #d3e2ff; border-radius: 6px; background: #f0f4ff; color: #245bdb; font-size: 12px; }
+.sidebar-help-next { margin-top: 14px; padding: 10px; border-radius: 6px; background: #f0f4ff; color: #245bdb; font-size: 12px; line-height: 1.7; }
+.sidebar-help-gif-link { display: block; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.sidebar-help-gif { display: block; width: 100%; height: auto; }
+.sidebar-help-gif-hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
 
 /* 兑换码兑换弹窗 */
 .sidebar-coupon-desc { font-size: 13px; color: #4e5969; line-height: 1.6; margin-bottom: 16px; }
@@ -157,6 +234,11 @@
 /* 暗黑模式适配 */
 html[data-sidebar-theme=dark] { background: #191b20; }
 html[data-sidebar-theme=dark] .sidebar-app { --panel: #24272e; --line: #3b404b; --muted: #abb4c5; color: #e1e7ef; }
+html[data-sidebar-theme=dark] .sidebar-topbar { background: #24272e; }
+html[data-sidebar-theme=dark] .sidebar-auth-modal .sidebar-modal-actions { background: #24272e; border-color: #3b404b; }
+html[data-sidebar-theme=dark] .sidebar-auth-guide h4 { color: #e1e7ef; }
+html[data-sidebar-theme=dark] .sidebar-auth-steps { color: #e1e7ef; }
+html[data-sidebar-theme=dark] .sidebar-app { background: #191b20; }
 html[data-sidebar-theme=dark] .sidebar-app button:not(.primary) { background: #292e38; color: #d9e1ee; border-color: #454d5c; }
 html[data-sidebar-theme=dark] .sidebar-message { background: #25354d; color: #b7cdee; }
 html[data-sidebar-theme=dark] .sidebar-warning { background: #393220; border-color: #62542e; color: #e2c887; }
@@ -164,7 +246,8 @@ html[data-sidebar-theme=dark] .sidebar-live { background: #20392f; border-color:
 html[data-sidebar-theme=dark] .sidebar-announcement { background: #3b3320; border-color: #6e5c2f; color: #f1d58e; }
 html[data-sidebar-theme=dark] .sidebar-billing-card { background: #1c2c3e; border-color: #2b4562; color: #e1e7ef; }
 html[data-sidebar-theme=dark] .sidebar-tips-card { background: #232730; border-color: #3b404b; }
-html[data-sidebar-theme=dark] .sidebar-feedback-card { background: #232730; border-color: #3b404b; }
+html[data-sidebar-theme=dark] .sidebar-app button.sidebar-feedback-btn { background: #24272e; color: #8caeff; border-color: #648bff; }
+html[data-sidebar-theme=dark] .sidebar-app button.sidebar-feedback-btn:hover { background: #2d3952; }
 html[data-sidebar-theme=dark] .sidebar-modal { background: #24272e; border-color: #3b404b; color: #e1e7ef; }
 html[data-sidebar-theme=dark] .sidebar-modal-header { background: #24272e; border-color: #3b404b; }
 html[data-sidebar-theme=dark] .sidebar-modal-header h2 { color: #e1e7ef; }

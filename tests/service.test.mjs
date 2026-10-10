@@ -6,7 +6,7 @@ import { BaseGateway } from '../server/base-gateway.mjs';
 import { createServer } from '../server/index.mjs';
 import { createBilling, defaultBillingConfig } from '../server/billing.mjs';
 import { createMcpBillingClient } from '../server/mcp-billing.mjs';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -47,7 +47,12 @@ test('计费套餐、授权同步、成功查询扣次和退款具备幂等基�
   assert.equal((await billing.status('base123')).remainingQuota, 1);
   const order = await billing.createOrder({ tenantKey: 'base123', planId: 'query_100' });
   assert.equal(order.status, 'PENDING');
+  await assert.rejects(billing.refund(order.orderId), { code: 'ORDER_NOT_PAID' });
+  await billing.payOrder(order.orderId);
+  assert.equal((await billing.status('base123')).maxQuota, 102);
   assert.deepEqual(await billing.refund(order.orderId), { tenantKey: 'base123', alreadyRefunded: false });
+  assert.equal((await billing.status('base123')).maxQuota, 2);
+  assert.equal((await billing.status('base123')).remainingQuota, 1);
   assert.deepEqual(await billing.refund(order.orderId), { tenantKey: 'base123', alreadyRefunded: true });
   assert.match(await readFile(path.join(dir, 'packages.json'), 'utf8'), /query_100/);
 });
@@ -64,9 +69,74 @@ test('新企业须先登记才能领取一次免费额度，订单渠道写入�
   const granted = await billing.claimTrial({ tenantKey: 'new-enterprise' });
   assert.equal(granted.remainingQuota, 15);
   assert.equal(granted.trialClaimed, true);
+  await billing.consume('new-enterprise');
+  await billing.syncLicense({ tenant_key: 'new-enterprise', billing_type: 'quota', used_quota: 0, max_quota: 0 });
+  assert.equal((await billing.status('new-enterprise')).maxQuota, 15);
+  assert.equal((await billing.status('new-enterprise')).usedQuota, 1);
   await assert.rejects(billing.claimTrial({ tenantKey: 'new-enterprise' }), { code: 'TRIAL_ALREADY_CLAIMED' });
   const order = await billing.createOrder({ tenantKey: 'new-enterprise', planId: 'query_100', payChannel: 'wxpay' });
   assert.equal(order.payChannel, '微信支付');
+  await billing.payOrder(order.orderId);
+  await billing.syncLicense({ tenant_key: 'new-enterprise', billing_type: 'quota', used_quota: 0, max_quota: 0 });
+  assert.equal((await billing.status('new-enterprise')).maxQuota, 115);
+  await billing.refund(order.orderId);
+  await billing.syncLicense({ tenant_key: 'new-enterprise', billing_type: 'quota', used_quota: 0, max_quota: 0 });
+  assert.equal((await billing.status('new-enterprise')).maxQuota, 15);
+  await billing.close();
+});
+test('SDK 管理平台企业状态决定是否需要登记，不能用本地旧信息跳过', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'express-enterprise-'));
+  let platformEnterprise = null;
+  const sdk = {
+    queryEnterpriseStatus: async () => ({ data: platformEnterprise ? { registered: true, name: platformEnterprise } : { registered: false } }),
+    registerEnterprise: async (_tenantKey, name) => ({ data: { name } }),
+  };
+  const billing = createBilling({ configPath: path.join(dir, 'packages.json'), statePath: path.join(dir, 'billing-state.json'), useDb: false, sdk });
+  await billing.registerEnterprise({ tenantKey: 'tenant-enterprise', enterpriseName: '本地旧名称' });
+  assert.deepEqual(await billing.enterpriseStatus('tenant-enterprise'), { registered: false, name: '', enterpriseType: '' });
+  platformEnterprise = '平台已登记名称';
+  assert.deepEqual(await billing.enterpriseStatus('tenant-enterprise'), { registered: true, name: '平台已登记名称', enterpriseType: '' });
+  sdk.queryEnterpriseStatus = async () => { throw new Error('平台连接失败'); };
+  await assert.rejects(billing.enterpriseStatus('tenant-enterprise'), { code: 'ENTERPRISE_LOOKUP' });
+  await billing.close();
+});
+test('平台退款通知只标记订单，最终同步只收回该订单的一千次并保留兑换额度', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'express-refund-'));
+  const billing = createBilling({ configPath: path.join(dir, 'packages.json'), statePath: path.join(dir, 'billing-state.json'), enforce: true, useDb: false, sdk: { redeemCoupon: async () => ({ data: { quota: 1000 } }) } });
+  await billing.syncLicense({ tenant_key: 'coupon-enterprise', billing_type: 'quota', used_quota: 0, max_quota: 10 });
+  await billing.redeemCoupon({ tenantKey: 'coupon-enterprise', couponCode: 'COUPON-1000' });
+  assert.equal((await billing.status('coupon-enterprise')).maxQuota, 1010);
+  const order = await billing.createOrder({ tenantKey: 'coupon-enterprise', planId: 'query_1000' });
+  await billing.payOrder(order.orderId);
+  assert.equal((await billing.status('coupon-enterprise')).maxQuota, 2010);
+  assert.deepEqual(await billing.markRefunded(order.orderId), { tenantKey: 'coupon-enterprise', alreadyRefunded: false });
+  assert.equal((await billing.status('coupon-enterprise')).maxQuota, 2010);
+  assert.deepEqual(await billing.markRefunded(order.orderId), { tenantKey: 'coupon-enterprise', alreadyRefunded: true });
+  await billing.syncLicense({ tenant_key: 'coupon-enterprise', billing_type: 'quota', used_quota: 0, max_quota: 10 });
+  assert.equal((await billing.status('coupon-enterprise')).maxQuota, 1010);
+  await billing.syncLicense({ tenant_key: 'coupon-enterprise', billing_type: 'quota', used_quota: 0, max_quota: 10 });
+  assert.equal((await billing.status('coupon-enterprise')).maxQuota, 1010);
+  await billing.close();
+});
+test('兑换码额度记在最大额度，旧负数使用量无损迁移', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'express-coupon-'));
+  const statePath = path.join(dir, 'billing-state.json');
+  const configPath = path.join(dir, 'packages.json');
+  await writeFile(statePath, JSON.stringify({ licenses: [{ tenantKey: 'legacy-coupon', billingType: 'quota', maxQuota: 1010, usedQuota: -1000 }], orders: [], enterprises: [], consumed: [] }));
+  const legacy = createBilling({ configPath, statePath, enforce: true, useDb: false });
+  const normalized = await legacy.status('legacy-coupon');
+  assert.equal(normalized.maxQuota, 2010);
+  assert.equal(normalized.usedQuota, 0);
+  assert.equal(normalized.remainingQuota, 2010);
+  await legacy.close();
+
+  const billing = createBilling({ configPath, statePath: path.join(dir, 'new-state.json'), enforce: true, useDb: false, sdk: { redeemCoupon: async () => ({ data: { quota: 1000 } }) } });
+  await billing.syncLicense({ tenant_key: 'new-coupon', billing_type: 'quota', used_quota: 0, max_quota: 10 });
+  await billing.redeemCoupon({ tenantKey: 'new-coupon', couponCode: 'COUPON-ONE' });
+  assert.equal((await billing.status('new-coupon')).maxQuota, 1010);
+  assert.equal((await billing.status('new-coupon')).usedQuota, 0);
+  await billing.redeemCoupon({ tenantKey: 'new-coupon', couponCode: 'COUPON-ONE' });
+  assert.equal((await billing.status('new-coupon')).maxQuota, 1010);
   await billing.close();
 });
 test('MCP 计费四项能力可调用且携带动态金额与幂等键', async () => {
@@ -168,6 +238,40 @@ test('自动查询手机号缺失时跳过，并清除无法核验的旧轨迹',
   assert.equal(result.code, 'PHONE_REQUIRED');
   assert.equal(writes.length, 1);
   assert.deepEqual(writes[0].data.fields, { 快递信息: '' });
+});
+test('初始化复用字段捷径已有列，仅创建缺失列并返回映射', async () => {
+  const fields = [
+    { field_id: 'fld_no', field_name: '快递单号', type: 1 },
+    { field_id: 'fld_result', field_name: '物流查询结果', type: 1 },
+    { field_id: 'fld_phone', field_name: '核验手机号', type: 1 },
+  ];
+  const created = [];
+  const gateway = new BaseGateway({ appToken: 'app12345', tableId: 'tbl12345', personalBaseToken: 'token12345678' }, {
+    base: { appTableField: {
+      list: async () => ({ code: 0, data: { items: fields, has_more: false } }),
+      create: async ({ data }) => {
+        created.push(data.field_name);
+        const field = { field_id: `fld_${fields.length}`, field_name: data.field_name, type: data.type };
+        fields.push(field);
+        return { code: 0, data: { field } };
+      },
+    } },
+  });
+  const result = await gateway.initialize({ fieldNames: {
+    number: '快递单号', info: '物流查询结果', phone: '核验手机号', carrier: '快递公司', time: '查询时间',
+  } });
+  assert.deepEqual(created, []);
+  assert.equal(result.mapping.number, 'fld_no');
+  assert.equal(result.mapping.info, 'fld_result');
+  assert.equal(result.mapping.phone, 'fld_phone');
+  assert.equal(result.fields.length, 3);
+});
+test('飞书授权失败时显示原始错误说明与重新授权指引', async () => {
+  const gateway = new BaseGateway({ appToken: 'app12345', tableId: 'tbl12345', personalBaseToken: 'token12345678' }, {
+    base: { appTableField: { list: async () => ({ code: 1011, msg: 'personal token is invalid' }) } },
+  });
+  await assert.rejects(gateway.fields(), error => error.code === 'FEISHU_ERROR' &&
+    error.message.includes('personal token is invalid') && error.message.includes('重新在当前多维表格获取授权码'));
 });
 test('供应商拒绝手机号时清除旧轨迹', async () => {
   const { gateway, writes } = fakeGateway({ number: 'SF1234567890' });

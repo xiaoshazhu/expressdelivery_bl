@@ -65,7 +65,7 @@ export function createServer(options = {}) {
     wsEnabled: process.env.AHSZ_WS_ENABLED !== 'false',
     instanceId: process.env.AHSZ_INSTANCE_ID || 'express-sidebar-main',
     orderAdapter: {
-      markRefunded: async (orderId) => billing.refund(orderId),
+      markRefunded: async (orderId) => billing.markRefunded(orderId),
     },
     licenseAdapter: {
       syncFinalLicense: async (payload) => billing.syncLicense({
@@ -201,8 +201,7 @@ export function createServer(options = {}) {
             announcements = pushedAnnouncements;
           }
 
-          const defaultGroupUrl = 'https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=c23v2186-e36c-42c9-a6e3-1bf381411a98';
-          const resolvedGroupUrl = process.env.FEISHU_GROUP_URL || defaultGroupUrl;
+          const resolvedGroupUrl = process.env.FEISHU_GROUP_URL || '';
 
           return send(200, {
             ok: true,
@@ -355,6 +354,8 @@ export function createServer(options = {}) {
         // 微信扫码下单（兼容 /api/pay/wechat/create-order 与 /api/pay/create-order）
         if (url.pathname === '/api/pay/wechat/create-order' || url.pathname === '/api/pay/create-order') {
           const tenantKey = requiredTenant(data?.tenantKey);
+          const enterprise = await billing.enterpriseStatus(tenantKey);
+          if (!enterprise.registered || !enterprise.name?.trim() || enterprise.name === '-') throw new ApiError(403, 'ENTERPRISE_REQUIRED', '请先完善企业信息后再充值');
           const order = await billing.createOrder({ tenantKey, planId: data?.planId, payChannel: 'wxpay' });
           if (billing.external) return send(200, order);
           const config = await billing.getConfig();
@@ -405,14 +406,14 @@ export function createServer(options = {}) {
         const token = (req.headers.authorization || '').replace(/^Bearer /, '');
         if (url.pathname === '/api/plugin/billing/update') { requirePlatformToken(req); return send(200, await billing.setConfig(data)); }
         if (url.pathname === '/api/plugin/license/sync') { requirePlatformToken(req); return send(200, await billing.syncLicense(data)); }
-        if (url.pathname === '/api/plugin/order/refund') { requirePlatformToken(req); return send(200, await billing.refund(data?.order_id)); }
+        if (url.pathname === '/api/plugin/order/refund') { requirePlatformToken(req); return send(200, await billing.markRefunded(data?.order_id)); }
         const session = sessions.get(token);
         if (url.pathname === '/api/disconnect') { sessions.remove(token); return send(200, { ok: true }); }
         if (url.pathname === '/api/billing/status') return send(200, await billing.status(session.gateway?.tenantKey || session.gateway?.appToken || `session:${token}`));
         if (url.pathname === '/api/billing/create-order') return send(200, await billing.createOrder({ ...data, tenantKey: session.gateway?.tenantKey || session.gateway?.appToken || `session:${token}` }));
         if (url.pathname.startsWith('/api/base/')) {
           if (!session.gateway) throw new ApiError(400, 'FEISHU_REQUIRED', '需要先连接真实飞书表格');
-          if (url.pathname.endsWith('/initialize')) return send(200, await session.gateway.initialize());
+          if (url.pathname.endsWith('/initialize')) return send(200, await session.gateway.initialize(data));
           if (url.pathname.endsWith('/rows')) return send(200, { rows: await session.gateway.rows(data?.mapping) });
           if (url.pathname.endsWith('/auto-query-record')) return send(200, await session.gateway.autoQueryRecord(data, service));
           return send(200, await session.gateway.queryRecord(data, service));

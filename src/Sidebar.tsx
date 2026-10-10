@@ -21,17 +21,33 @@ const FALLBACK_PLANS: RechargePlan[] = [
 const API_BASE = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const apiUrl = (path: string) => `${API_BASE}${path}`;
 
-async function post<T>(route: string, body: unknown, token = ''): Promise<T> {
-  const response = await fetch(apiUrl(`/api/${route}`), {
+async function post<T>(route: string, body: unknown, token = '', timeoutMs = 30000, externalSignal?: AbortSignal): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const abort = () => controller.abort();
+  if (externalSignal?.aborted) abort();
+  else externalSignal?.addEventListener('abort', abort, { once: true });
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(`/api/${route}`), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
-  });
-  const value = await response.json();
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('连接超时，请检查宝塔 Node 项目是否运行，再重试');
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abort);
+  }
+  let value: any;
+  try { value = await response.json(); }
+  catch { throw new Error(`服务器返回异常（HTTP ${response.status}），请检查 Node 项目日志`); }
   if (!response.ok) throw new Error(value.error?.message || value.message || '请求失败');
   return value;
 }
@@ -47,6 +63,24 @@ function formatQuota(num?: number | null): string {
 
 const DEFAULT_TENANT_KEY = '';
 const trialOfferSeenKey = (tenant: string) => `express-sidebar:trial-offer-seen:${tenant}`;
+const authCodeKey = (tenant: string, baseId: string) => `express-sidebar:auth:${tenant}:${baseId}`;
+type FieldNameKey = 'number' | 'phone' | 'info';
+const DEFAULT_FIELD_NAMES: Record<FieldNameKey, string> = {
+  number: '快递单号', phone: '核验手机号', info: '快递信息',
+};
+const FIELD_ALIASES: Record<FieldNameKey, string[]> = {
+  number: ['快递单号', '运单号'], phone: ['核验手机号', '手机号码', '手机号'],
+  info: ['快递信息', '物流查询结果', '物流信息'],
+};
+function matchField(fields: Field[], key: FieldNameKey): Field | undefined {
+  return FIELD_ALIASES[key].map(name => fields.find(field => field.name === name && field.type === 1)).find(Boolean);
+}
+function mappingFromFields(fields: Field[]): Mapping {
+  return {
+    number: matchField(fields, 'number')?.id || '', info: matchField(fields, 'info')?.id || '',
+    phone: matchField(fields, 'phone')?.id || '',
+  };
+}
 
 function hasSeenTrialOffer(tenant: string): boolean {
   try { return window.localStorage.getItem(trialOfferSeenKey(tenant)) === '1'; } catch { return false; }
@@ -66,10 +100,11 @@ export default function Sidebar() {
   const [session, setSession] = useState<Session | null>(null);
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [enterprise, setEnterprise] = useState<EnterpriseStatus | null>(null);
-  const isEnterpriseFilled = Boolean(enterprise?.name && enterprise.name.trim() !== '' && enterprise.name.trim() !== '-');
 
   // 模态弹窗状态
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [helpOpen, setHelpOpen] = useState(false);
   const [couponModalOpen, setCouponModalOpen] = useState(false);
   const [couponCode, setCouponCode] = useState('');
   const [couponBusy, setCouponBusy] = useState(false);
@@ -79,11 +114,11 @@ export default function Sidebar() {
   const [enterpriseOpen, setEnterpriseOpen] = useState(false);
   const [enterpriseName, setEnterpriseName] = useState('');
   const [enterpriseType, setEnterpriseType] = useState('');
+  const [enterpriseError, setEnterpriseError] = useState('');
   const [offerEligible, setOfferEligible] = useState(false);
   const [pendingTrial, setPendingTrial] = useState(false);
 
   const [rechargeOpen, setRechargeOpen] = useState(false);
-  const [pendingRecharge, setPendingRecharge] = useState(false);
   const [rechargePlans, setRechargePlans] = useState<RechargePlan[]>([]);
   const [rechargeLoading, setRechargeLoading] = useState(false);
   const [rechargeError, setRechargeError] = useState('');
@@ -112,9 +147,33 @@ export default function Sidebar() {
   const [groupUrl, setGroupUrl] = useState('');
   const credential = useRef<Session | null>(null);
   const [code, setCode] = useState('');
+  const authAttempt = useRef(0);
+  const authRequest = useRef<AbortController | null>(null);
+  const closeAuth = () => {
+    authAttempt.current++;
+    authRequest.current?.abort();
+    authRequest.current = null;
+    setAuthModalOpen(false);
+    setCode('');
+    setAuthError('');
+  };
+  const openAuth = () => {
+    setCode('');
+    setAuthError('');
+    setAuthModalOpen(true);
+  };
   const [mapping, setMapping] = useState<Mapping>({ number: '', info: '' });
+  const [knownFields, setKnownFields] = useState<Field[]>([]);
+  const [fieldNames, setFieldNames] = useState(DEFAULT_FIELD_NAMES);
+  const [fieldsOpen, setFieldsOpen] = useState(true);
+  const [initialized, setInitialized] = useState(false);
+  const [queryScope, setQueryScope] = useState<'current' | 'empty' | 'all'>('current');
+  const [previewRows, setPreviewRows] = useState<Row[] | null>(null);
+  const [previewError, setPreviewError] = useState('');
+  const [previewNonce, setPreviewNonce] = useState(0);
+  const [trialPanelOpen, setTrialPanelOpen] = useState(true);
   const [carrier, setCarrier] = useState('自动识别');
-  const [autoQuery, setAutoQuery] = useState(true);
+  const [autoQuery, setAutoQuery] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const lock = useRef(false);
@@ -137,10 +196,15 @@ export default function Sidebar() {
     }
   };
 
-  const OFFICIAL_GROUP_URL = 'https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=c23v2186-e36c-42c9-a6e3-1bf381411a98';
-
   const openOfficialGroup = () => {
-    window.open(OFFICIAL_GROUP_URL, '_blank', 'noopener,noreferrer');
+    try {
+      const target = new URL(groupUrl);
+      if (target.protocol === 'https:' || target.protocol === 'http:') {
+        window.open(target.href, '_blank', 'noopener,noreferrer');
+        return;
+      }
+    } catch { /* The group link has not been configured yet. */ }
+    setMessage('官方交流群暂未配置，请稍后再试');
   };
 
   // 1. 服务健康检测与模式识别
@@ -193,8 +257,6 @@ export default function Sidebar() {
       if (entRes.ok) {
         const e = await entRes.json();
         setEnterprise(e);
-        if (e.name) setEnterpriseName(e.name);
-        if (e.enterpriseType) setEnterpriseType(e.enterpriseType);
       }
     } catch (_) {
     } finally {
@@ -234,6 +296,10 @@ export default function Sidebar() {
         active.current = null;
         setContext(null);
         setMapping({ number: '', info: '' });
+        setKnownFields([]);
+        setFieldNames(DEFAULT_FIELD_NAMES);
+        setInitialized(false);
+        setPreviewRows(null);
         setLast(null);
         setFailed([]);
         setProgress({ done: 0, total: 0, ok: 0, failed: 0, skipped: 0 });
@@ -247,6 +313,14 @@ export default function Sidebar() {
         const next = { baseId: selection.baseId, tableId: selection.tableId, recordId: selection.recordId, name };
         active.current = next;
         setContext(next);
+        void table.getFieldMetaList().then(items => {
+          if (disposed || request !== sequence || credential.current) return;
+          const existingFields: Field[] = items.map(field => ({ id: field.id, name: field.name, type: Number(field.type) }));
+          setKnownFields(existingFields);
+          setMapping(mappingFromFields(existingFields));
+          setFieldNames(Object.fromEntries((Object.keys(DEFAULT_FIELD_NAMES) as FieldNameKey[])
+            .map(key => [key, matchField(existingFields, key)?.name || DEFAULT_FIELD_NAMES[key]])) as Record<FieldNameKey, string>);
+        }).catch(() => { /* 授权前无法读取字段时，连接成功后由服务端同步。 */ });
         // 重要：切勿将 tenantKey 设为 selection.baseId（baseId 是数据表 AppToken，非企业组织 TenantKey）
         setMessage('');
       }
@@ -305,20 +379,27 @@ export default function Sidebar() {
       if (disposed) return;
       if (ent) {
         setEnterprise(ent);
-        if (ent.name) setEnterpriseName(ent.name);
-        if (ent.enterpriseType) setEnterpriseType(ent.enterpriseType);
       }
       const license = licRes?.license;
       if (license) setBilling(license);
       const eligible = Boolean(license && license.trialClaimed === false);
       setOfferEligible(eligible);
-      if (eligible && !hasSeenTrialOffer(trustedTenant)) {
+      if (eligible && session && !hasSeenTrialOffer(trustedTenant)) {
         markTrialOfferSeen(trustedTenant);
         setTrialOfferOpen(true);
       }
     });
     return () => { disposed = true; };
-  }, [tenantKey]);
+  }, [tenantKey, session?.token]);
+
+  // 每个企业与多维表格只录入一次授权码，切换表格时自动重建短期会话。
+  useEffect(() => {
+    if (!embedded || !context || !tenantKey || session || busy) return;
+    let saved = '';
+    try { saved = window.localStorage.getItem(authCodeKey(tenantKey, context.baseId)) || ''; } catch { /* Storage may be unavailable. */ }
+    if (saved) void connect(saved);
+    else setAuthModalOpen(true);
+  }, [embedded, context?.baseId, context?.tableId, tenantKey, session?.token]);
 
   // 7. 自动查询监听
   useEffect(() => {
@@ -355,21 +436,27 @@ export default function Sidebar() {
       }
     };
 
-    const schedule = (recordId: string) => {
+    const schedule = (recordId: string, delay = 1200) => {
       if (!recordId || disposed) return;
       const old = timers.get(recordId);
       if (old) window.clearTimeout(old);
-      timers.set(recordId, window.setTimeout(() => void execute(recordId), 1200));
+      timers.set(recordId, window.setTimeout(() => void execute(recordId), delay));
     };
 
     import('@lark-base-open/js-sdk').then(async ({ bitable }) => {
       const table = await bitable.base.getTableById(context.tableId);
       if (disposed) return;
-      off.push(table.onRecordAdd(event => event.data.forEach(schedule)));
+      off.push(table.onRecordAdd(event => event.data.forEach(recordId => schedule(recordId))));
       off.push(table.onRecordModify(event => {
         const watched = new Set([mapping.number, mapping.phone, mapping.carrier].filter(Boolean));
         if (event.data.fieldIds.some(fieldId => watched.has(fieldId))) schedule(event.data.recordId);
       }));
+      void post<{ rows: Row[] }>('base/rows', { mapping }, session.token)
+        .then(({ rows }) => {
+          if (!disposed) rows.filter(row => row.number.trim() && !row.info.trim())
+            .forEach((row, index) => schedule(row.id, 1200 + index * 650));
+        })
+        .catch(error => { if (!disposed) setMessage(`自动扫描失败：${error instanceof Error ? error.message : '读取记录失败'}`); });
     }).catch(() => {
       if (!disposed) setMessage('自动查询监听启动失败，请重新打开插件。');
     });
@@ -440,10 +527,18 @@ export default function Sidebar() {
   async function connect(tokenValue?: string) {
     const targetCode = String(tokenValue !== undefined ? tokenValue : code).trim();
     if (!targetCode) {
-      setMessage('请输入飞书个人授权码 (Personal Base Token)');
+      setAuthError('请输入飞书个人授权码');
       return;
     }
-    await act(async version => {
+    if (lock.current) return;
+    const attempt = ++authAttempt.current;
+    const request = new AbortController();
+    authRequest.current = request;
+    lock.current = true;
+    setBusy(true);
+    setAuthError('');
+    const version = revision.current;
+    try {
       const current = active.current;
       if (!current) throw new Error('请先选择数据表');
       const result = await post<Session>('connect', {
@@ -452,24 +547,41 @@ export default function Sidebar() {
         tableId: current.tableId,
         tenantKey: currentTenant(),
         personalBaseToken: targetCode,
-      });
-      if (version !== revision.current) {
+      }, '', 18000, request.signal);
+      if (version !== revision.current || attempt !== authAttempt.current) {
         await post('disconnect', {}, result.token);
         return;
       }
       credential.current = result;
       setSession(result);
-      setCode('');
-      setAuthModalOpen(false);
-      setMapping({
-        number: result.fields.find(f => f.name === '快递单号' && f.type === 1)?.id || '',
-        info: result.fields.find(f => f.name === '快递信息' && f.type === 1)?.id || '',
-        carrier: result.fields.find(f => f.name === '快递公司' && f.type === 1)?.id || '',
-        phone: result.fields.find(f => f.name === '核验手机号' && f.type === 1)?.id || '',
-      });
+      setKnownFields(result.fields);
+      try { window.localStorage.setItem(authCodeKey(currentTenant(), current.baseId), targetCode); } catch { /* Storage may be unavailable. */ }
+      closeAuth();
+      setMapping(mappingFromFields(result.fields));
+      setInitialized(false);
+      setFieldNames(Object.fromEntries((Object.keys(DEFAULT_FIELD_NAMES) as FieldNameKey[])
+        .map(key => [key, matchField(result.fields, key)?.name || DEFAULT_FIELD_NAMES[key]])) as Record<FieldNameKey, string>);
+      setFieldsOpen(!mappingFromFields(result.fields).number || !mappingFromFields(result.fields).info);
       setMessage('已完成授权配置并连接数据表！');
+      if (offerEligible && !hasSeenTrialOffer(currentTenant())) {
+        markTrialOfferSeen(currentTenant());
+        setTrialOfferOpen(true);
+      }
       void refreshBilling();
-    });
+    } catch (error) {
+      if (attempt !== authAttempt.current) return;
+      const detail = error instanceof Error ? error.message : '授权码验证失败';
+      if (tokenValue !== undefined && tokenValue !== code) {
+        try { window.localStorage.removeItem(authCodeKey(currentTenant(), active.current?.baseId || '')); } catch { /* Storage may be unavailable. */ }
+      }
+      setAuthError(detail);
+      setAuthModalOpen(true);
+      setMessage(`授权连接失败：${detail}`);
+    } finally {
+      if (authRequest.current === request) authRequest.current = null;
+      lock.current = false;
+      setBusy(false);
+    }
   }
 
   // 领取试用套餐
@@ -478,9 +590,16 @@ export default function Sidebar() {
     const value = await response.json();
     if (!response.ok) throw new Error(value.error?.message || '检查企业信息失败，请重试');
     setEnterprise(value);
-    if (value.name) setEnterpriseName(value.name);
-    if (value.enterpriseType) setEnterpriseType(value.enterpriseType);
     return value;
+  }
+
+  function showEnterpriseForm(action: 'trial' | 'purchase', plan?: RechargePlan) {
+    setEnterpriseName('');
+    setEnterpriseType('');
+    setEnterpriseError('');
+    setPendingTrial(action === 'trial');
+    setPendingPurchase(action === 'purchase' ? plan || null : null);
+    setEnterpriseOpen(true);
   }
 
   async function claimTrial(registeredNow = false) {
@@ -492,19 +611,19 @@ export default function Sidebar() {
     let registeredEnterprise = enterprise;
     if (!registeredNow) {
       try { registeredEnterprise = await enterpriseForAction(trustedTenant); }
-      catch (error) { setMessage(error instanceof Error ? error.message : '检查企业信息失败'); return; }
+      catch (error) { setMessage(error instanceof Error ? error.message : '查询企业信息失败'); return; }
+      if (!registeredEnterprise.registered || !registeredEnterprise.name?.trim() || registeredEnterprise.name === '-') {
+        showEnterpriseForm('trial');
+        return;
+      }
     }
     const resolvedName = (registeredNow ? enterpriseName : registeredEnterprise?.name || '').trim();
-    if ((!registeredEnterprise?.registered && !registeredNow) || !resolvedName) {
-      setPendingTrial(true);
-      setEnterpriseOpen(true);
-      return;
-    }
+    if (!resolvedName) { setMessage('请填写企业名称后领取'); return; }
     await act(async () => {
       const value = await post<BillingStatus & { registered?: boolean; enterprise?: EnterpriseStatus }>('billing/claim-trial', {
         tenantKey: trustedTenant,
         enterpriseName: resolvedName,
-        enterpriseType: enterpriseType.trim() || enterprise?.enterpriseType || '',
+        enterpriseType: registeredNow ? enterpriseType.trim() : registeredEnterprise?.enterpriseType || '',
       });
       if (value.enterprise) {
         setEnterprise(value.enterprise);
@@ -549,21 +668,9 @@ export default function Sidebar() {
   }
 
   // 打开充值续费弹窗（拉取平台受控的实时套餐）
-  async function openRecharge(registeredNow = false) {
+  async function openRecharge() {
     const key = currentTenant();
     if (!key) { setMessage('未获取到当前租户标识'); return; }
-    let registeredEnterprise = enterprise;
-    if (!registeredNow) {
-      try { registeredEnterprise = await enterpriseForAction(key); }
-      catch (error) { setMessage(error instanceof Error ? error.message : '检查企业信息失败'); return; }
-    }
-    if (!registeredNow && (!registeredEnterprise?.registered || !registeredEnterprise.name?.trim() || registeredEnterprise.name === '-')) {
-      setPendingRecharge(true);
-      setEnterpriseOpen(true);
-      setMessage('请先完善当前企业信息后再进行充值');
-      return;
-    }
-    setPendingRecharge(false);
     setRechargeOpen(true);
     setRechargeLoading(true);
     setRechargeError('');
@@ -585,10 +692,14 @@ export default function Sidebar() {
   async function startPurchase(plan: RechargePlan, skipEnterpriseCheck = false) {
     const key = currentTenant();
     setPaymentError('');
-    if (!skipEnterpriseCheck && (!enterprise?.registered || !isEnterpriseFilled)) {
-      setPendingPurchase(plan);
-      setEnterpriseOpen(true);
-      return;
+    if (!skipEnterpriseCheck) {
+      let registeredEnterprise: EnterpriseStatus;
+      try { registeredEnterprise = await enterpriseForAction(key); }
+      catch (error) { setMessage(error instanceof Error ? error.message : '查询企业信息失败'); return; }
+      if (!registeredEnterprise.registered || !registeredEnterprise.name?.trim() || registeredEnterprise.name === '-') {
+        showEnterpriseForm('purchase', plan);
+        return;
+      }
     }
     setPaymentPlan(plan);
     setPaymentOrder(null);
@@ -608,10 +719,12 @@ export default function Sidebar() {
   async function submitEnterprise() {
     const key = currentTenant();
     if (!enterpriseName.trim() || enterpriseName.trim() === '-') {
-      setMessage('请输入有效的企业名称');
+      setEnterpriseError('请输入有效的企业名称');
       return;
     }
     setPaymentBusy(true);
+    setMessage('');
+    setEnterpriseError('');
     try {
       await post('billing/register-enterprise', {
         tenantKey: key,
@@ -626,13 +739,11 @@ export default function Sidebar() {
         await startPurchase(plan, true);
       } else if (pendingTrial) {
         await claimTrial(true);
-      } else if (pendingRecharge) {
-        await openRecharge(true);
       } else {
         setMessage('企业信息保存成功！');
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '登记企业失败');
+      setEnterpriseError(error instanceof Error ? error.message : '登记企业失败');
     } finally {
       setPaymentBusy(false);
     }
@@ -690,24 +801,52 @@ export default function Sidebar() {
   async function initialize() {
     await act(async version => {
       if (!session) return;
-      const result = await post<{ mapping: Mapping; fields: Field[] }>('base/initialize', {}, session.token);
+      const result = await post<{ mapping: Mapping; fields: Field[] }>('base/initialize', { fieldNames }, session.token);
       if (version !== revision.current) return;
-      setMapping(previous => ({
-        ...result.mapping,
-        carrier: result.fields.some(f => f.id === previous.carrier && f.type === 1)
-          ? previous.carrier : result.fields.find(f => f.name === '快递公司' && f.type === 1)?.id || '',
-        phone: result.fields.some(f => f.id === previous.phone && f.type === 1)
-          ? previous.phone : result.fields.find(f => f.name === '核验手机号' && f.type === 1)?.id || '',
-      }));
+      setMapping(result.mapping);
+      setKnownFields(result.fields);
+      setFieldsOpen(false);
+      setInitialized(true);
+      setPreviewNonce(value => value + 1);
       const next = { ...session, fields: result.fields };
       credential.current = next;
       setSession(next);
-      setMessage('已在飞书数据表创建或复用「快递单号」「快递信息」列。');
+      setMessage('表格结构已初始化：已有字段直接复用，缺少的字段已创建。');
     });
   }
 
+  function skipInitialize() {
+    const fields = session?.fields || knownFields;
+    const next = Object.fromEntries((Object.keys(fieldNames) as FieldNameKey[]).map(key => [
+      key, fields.find(field => field.name === fieldNames[key].trim() && field.type === 1)?.id || '',
+    ])) as Mapping;
+    setMapping(next);
+    setFieldsOpen(false);
+    setInitialized(false);
+    setMessage(next.number && next.info ? '已匹配现有字段，可以开始查询。' : '未找到单号或信息文本字段，请展开字段配置并初始化表格。');
+  }
+
   // 执行查询
-  async function query(scope: 'current' | 'all' | 'failed') {
+  const targetsForScope = (rows: Row[], scope: 'current' | 'empty' | 'all', selectedId: string | null) =>
+    scope === 'current' ? rows.filter(row => row.id === selectedId) : scope === 'empty' ? rows.filter(row => !row.info.trim()) : rows;
+
+  useEffect(() => {
+    if (!session || !mapping.number || !mapping.info || mapping.number === mapping.info) {
+      setPreviewRows(null);
+      setPreviewError('');
+      return;
+    }
+    let disposed = false;
+    setPreviewRows(null);
+    post<{ rows: Row[] }>('base/rows', { mapping }, session.token).then(result => {
+      if (!disposed) { setPreviewRows(result.rows); setPreviewError(''); }
+    }).catch(error => {
+      if (!disposed) setPreviewError(error instanceof Error ? error.message : '读取记录失败');
+    });
+    return () => { disposed = true; };
+  }, [session?.token, mapping.number, mapping.phone, mapping.info, mapping.carrier, mapping.time, previewNonce]);
+
+  async function query(scope: 'current' | 'empty' | 'all') {
     await act(async version => {
       if (!session) return;
       cancelled.current = false;
@@ -716,8 +855,10 @@ export default function Sidebar() {
       const { rows } = await post<{ rows: Row[] }>('base/rows', { mapping }, session.token);
       if (version !== revision.current) return;
       const currentId = active.current?.recordId;
-      const targets = scope === 'current' ? rows.filter(r => r.id === currentId) : scope === 'failed' ? rows.filter(r => failed.some(f => f.id === r.id)) : rows;
+      const targets = targetsForScope(rows, scope, currentId || null);
       if (!targets.length) throw new Error(scope === 'current' ? '请先在飞书表格中点击需要查询的那一行。' : '没有可查询的记录。');
+      const requiredQuota = targets.filter(row => row.number.trim()).length;
+      if (billing?.billingType === 'quota' && (billing.remainingQuota ?? 0) < requiredQuota) throw new Error(`当前额度不足：本次需要 ${requiredQuota} 次，剩余 ${billing.remainingQuota ?? 0} 次。请先领取体验额度或充值。`);
       const failures: Row[] = [];
       const stats = { done: 0, total: targets.length, ok: 0, failed: 0, skipped: 0 };
       setProgress({ ...stats });
@@ -744,13 +885,23 @@ export default function Sidebar() {
         if (stats.done < stats.total) await new Promise(resolve => setTimeout(resolve, 550));
       }
       if (version === revision.current) setMessage(`${cancelled.current ? '已停止后续查询' : '查询完成'}：成功 ${stats.ok}，失败 ${stats.failed}，空单号跳过 ${stats.skipped}。成功结果已写入飞书表格。`);
+      setPreviewNonce(value => value + 1);
     });
   }
 
   const ready = !!session && !!mapping.number && !!mapping.info && mapping.number !== mapping.info && !busy;
+  const previewTargets = previewRows ? targetsForScope(previewRows, queryScope, context?.recordId || null) : [];
+  const requiredQuota = previewTargets.filter(row => row.number.trim()).length;
+  const quotaInsufficient = billing?.billingType === 'quota' && requiredQuota > (billing.remainingQuota ?? 0);
 
   return (
     <div className="sidebar-app">
+      <header className="sidebar-topbar">
+        <span className="sidebar-topbar-icon" aria-hidden="true">▦</span>
+        <strong>运单助手</strong>
+        <button type="button" onClick={() => setHelpOpen(true)}>使用教程</button>
+      </header>
+      <main className="sidebar-content">
       {/* 1. 顶部公告栏（接收管理平台信息，悬停暂停且展示跳转提示） */}
       {announcements.length > 0 && (
         <section
@@ -813,16 +964,14 @@ export default function Sidebar() {
           </div>
 
           <div className="sidebar-billing-actions">
-            <div className="sidebar-billing-actions-row">
-              <button type="button" className="btn-auth-config" onClick={() => setAuthModalOpen(true)}>
-                ⚙️ 授权码配置
-              </button>
-              <button type="button" className="btn-recharge" onClick={() => void openRecharge()}>
-                充值续费
-              </button>
-            </div>
+            <button type="button" className="btn-auth-config" onClick={openAuth}>
+              授权码配置
+            </button>
+            <button type="button" className="btn-recharge" onClick={() => void openRecharge()}>
+              充值续费
+            </button>
             <button type="button" className="btn-coupon" onClick={() => setCouponModalOpen(true)}>
-              🎟️ 兑换码
+              兑换码
             </button>
           </div>
         </div>
@@ -840,27 +989,33 @@ export default function Sidebar() {
           <span>企业用量: {billing?.usedQuota ?? 0} 次</span>
         </div>
 
-        {offerEligible && (
-          <div className="sidebar-billing-trial-bar">
-            <span style={{ fontSize: '12px', color: '#eb2f96' }}>🎁 新企业赠送 15 次体验查询</span>
-            <button type="button" className="sidebar-billing-trial" onClick={() => setTrialOfferOpen(true)}>
-              免费领取试用
+        <div className="sidebar-trial-fold">
+          <button type="button" className="sidebar-trial-toggle" onClick={() => setTrialPanelOpen(value => !value)}>
+            <span>免费体验额度{billing?.trialClaimed ? '（已领取）' : ''}</span><span>{trialPanelOpen ? '▲' : '▼'}</span>
+          </button>
+          {trialPanelOpen && <div className="sidebar-trial-content">
+            <p>每个企业限领 15 次，免费使用。</p>
+            <button type="button" className="primary" disabled={!offerEligible} onClick={() => { setEnterpriseName(''); setTrialOfferOpen(true); }}>
+              {billing?.trialClaimed ? '已领取' : '获取体验额度'}
             </button>
-          </div>
-        )}
+          </div>}
+        </div>
       </section>
 
-      {/* 3. 温馨提示卡片（精准对齐电子签名截图 1） */}
+      {/* 温馨提示 */}
       <section className="sidebar-tips-card" aria-label="温馨提示">
-        <div className="sidebar-tips-title">温馨提示</div>
-        <div className="sidebar-tips-alert">
-          ⚠️ 重要：使用前必须先完成「授权码配置」，否则无法查询物流信息。
+        <div className="sidebar-tips-heading">
+          <div className="sidebar-tips-title">温馨提示</div>
+          <details className="sidebar-tips-more">
+            <summary aria-label="其他注意事项">?</summary>
+            <ol>
+              <li>切换数据表后，请重新打开插件页面</li>
+              <li>查询将消耗套餐次数（1 条单号 = 1 次）</li>
+              <li>批量查询只针对尚无结果的数据行</li>
+            </ol>
+          </details>
         </div>
-        <ul className="sidebar-tips-list">
-          <li>1、切换数据表格之后，请重新打开插件页面</li>
-          <li>2、操作将消耗套餐次数（1条记录 = 1次）</li>
-          <li>3、批量查询只针对未填写/未完成查询的数据行</li>
-        </ul>
+        <p className="sidebar-tips-text"><strong>顺丰、跨越、中通等平台必须填写手机号码</strong>（收／寄件人手机号或后四位），否则接口会返回查询失败并退回额度。</p>
       </section>
 
 
@@ -881,114 +1036,72 @@ export default function Sidebar() {
         </section>
       ) : (
         <>
-          {/* 4. 当前表格与字段配置 */}
-          <section className="sidebar-panel">
-            <h2>当前数据表</h2>
-            <strong>{context?.name || '等待飞书连接…'}</strong>
-            <p className="sidebar-help">
-              {context ? (context.recordId ? '已选中一行，可单独查询。' : '点击表格中的任意一行，可单独针对该行查询。') : '请在多维表格中打开本插件。'}
-            </p>
-            <details>
-              <summary>连接信息</summary>
-              <p className="sidebar-help">
-                Base：{context?.baseId || '未识别'}<br />
-                数据表：{context?.tableId || '未识别'}
-              </p>
-              <button disabled={busy} onClick={() => recognize.current()}>重新识别</button>
-            </details>
-          </section>
-
-          <section className="sidebar-panel">
-            <h2>批量配置与字段映射</h2>
-            {!session ? (
-              <div className="sidebar-direct-auth">
-                <div className="sidebar-auth-row">
-                  <input
-                    type="password"
-                    className="sidebar-auth-input"
-                    value={code}
-                    disabled={busy}
-                    onChange={e => setCode(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && code.trim() && !busy) {
-                        void connect(code);
-                      }
-                    }}
-                    placeholder="请输入飞书个人授权码 (Personal Base Token)"
-                  />
-                </div>
-                <div className="sidebar-auth-row" style={{ marginTop: '10px' }}>
-                  <button
-                    type="button"
-                    className="primary sidebar-connect-btn"
-                    disabled={!code.trim() || busy}
-                    onClick={() => void connect(code)}
-                  >
-                    {busy ? '正在连接数据表…' : '连接数据表'}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <p className="sidebar-help" style={{ color: '#277658' }}>✓ 数据表已成功连接授权。</p>
-                {(['number', 'info', 'carrier', 'phone'] as const).map(key => (
-                  <label key={key}>
-                    {key === 'number' ? '快递单号列（必选）' : key === 'info' ? '快递信息列（必选）' : key === 'carrier' ? '快递公司列（可选）' : '核验手机号列（可选）'}
-                    <select value={mapping[key] || ''} disabled={busy} onChange={e => setMapping({ ...mapping, [key]: e.target.value })}>
-                      <option value="">{key === 'number' || key === 'info' ? '请选择文本字段' : '不使用此辅助列'}</option>
-                      {session.fields.filter(f => f.type === 1).map(f => (
-                        <option key={f.id} value={f.id}>{f.name}</option>
-                      ))}
-                    </select>
+          <section className="sidebar-panel sidebar-config-card">
+            <div className="sidebar-section-heading">
+              <h2>批量配置</h2>
+              <span className={ready ? 'sidebar-status ready' : 'sidebar-status'}>{session ? (mapping.number && mapping.info ? '已就绪' : '待初始化表格') : '待授权'}</span>
+            </div>
+            <p className="sidebar-help">当前数据表：{context?.name || '等待飞书连接…'}。系统按单号自动识别快递公司，需要手机号核验时读取对应字段。</p>
+            {!session && <div className="sidebar-auth-needed">
+              <p>尚未完成授权码配置，暂不能配置字段与查询。</p>
+              <button type="button" className="primary" onClick={openAuth}>去配置授权码</button>
+            </div>}
+            <div className={session ? 'sidebar-field-box' : 'sidebar-field-box disabled'}>
+              <button type="button" className="sidebar-field-toggle" disabled={!session} onClick={() => setFieldsOpen(value => !value)}>
+                <span>✎　初始化表格结构</span>
+                <span className={mapping.number && mapping.info ? 'sidebar-status ready' : 'sidebar-status'}>{mapping.number && mapping.info ? (initialized ? '已初始化' : '已匹配') : '未初始化'}</span>
+                <span>{fieldsOpen ? '▲' : '▼'}</span>
+              </button>
+              {fieldsOpen ? <div className="sidebar-field-body">
+                <p className="sidebar-help">已读取当前表格的 {knownFields.length} 个字段。已有同名文本字段直接复用，缺少的字段才会创建，不覆盖数据。</p>
+                {knownFields.length > 0 && <p className="sidebar-known-fields">现有字段：{knownFields.map(field => field.name).join('、')}</p>}
+                {([
+                  ['number', '快递单号字段名称（必填）'],
+                  ['phone', '核验手机号字段名称（顺丰／跨越等必填）'],
+                  ['info', '快递信息字段名称'],
+                ] as [FieldNameKey, string][]).map(([key, label]) => (
+                  <label key={key}>{label}
+                    <input value={fieldNames[key]} disabled={!session || busy} onChange={e => setFieldNames(previous => ({ ...previous, [key]: e.target.value }))} />
                   </label>
                 ))}
-                <p className="sidebar-help">顺丰、中通、跨越请映射收/寄件手机号列，可填完整 11 位或后四位；查询时与单号一起提交阿里云。批量混合快递建议映射“快递公司”列。</p>
-                <button className="wide" disabled={busy} onClick={initialize}>在当前表创建 / 复用单号与信息列</button>
-                <button className="wide" disabled={busy} onClick={() => act(async () => {
-                  await post('disconnect', {}, session.token);
-                  credential.current = null;
-                  setSession(null);
-                  setMessage('已清除当前表格授权连接。');
-                })}>
-                  断开并清除授权
-                </button>
-              </>
-            )}
+                <div className="sidebar-field-actions">
+                  <button type="button" className="primary" disabled={!session || busy} onClick={() => void initialize()}>{busy ? '正在处理…' : '初始化表格结构'}</button>
+                  <button type="button" disabled={!session || busy} onClick={skipInitialize}>跳过</button>
+                </div>
+                <p className="sidebar-help">如果现有字段名称不同，可修改上方名称后点“跳过”直接匹配。</p>
+              </div> : <p className="sidebar-field-summary">已按【{(['number', 'phone', 'info'] as FieldNameKey[]).filter(key => Boolean(mapping[key])).map(key => fieldNames[key]).join(' / ') || '尚未匹配字段'}】建立字段，点击展开可修改字段名称或重新初始化。</p>}
+            </div>
+            {session && <button type="button" className="sidebar-disconnect" disabled={busy} onClick={() => act(async () => {
+              await post('disconnect', {}, session.token);
+              credential.current = null;
+              setSession(null);
+              if (context) try { window.localStorage.removeItem(authCodeKey(currentTenant(), context.baseId)); } catch { /* Storage may be unavailable. */ }
+              setMessage('已清除当前表格授权连接。');
+            })}>断开并清除授权</button>}
           </section>
 
-          {/* 5. 快递查询操作 */}
-          <section className="sidebar-panel">
-            <h2>查询物流轨迹</h2>
-            <label>
-              承运商识别模式
-              <input list="sidebar-carriers" value={carrier} disabled={busy} onChange={e => setCarrier(e.target.value)} />
-              <datalist id="sidebar-carriers">
-                {['自动识别', '京东', '邮政', '安能', '跨越', '顺丰', '中通', '货拉拉'].map(c => (
-                  <option key={c}>{c}</option>
-                ))}
-              </datalist>
-            </label>
-            <label className="sidebar-toggle">
-              <input type="checkbox" checked={autoQuery} disabled={!session} onChange={e => setAutoQuery(e.target.checked)} />
-              自动查询新增或修改的记录（单号变动后 1.2 秒内自动执行）
-            </label>
-            <button className="wide" disabled={!ready || !context?.recordId} onClick={() => query('current')} title={!context?.recordId ? '先点击表格中该行的单元格使其成为当前行；勾选复选框不会提供活动行 ID' : ''}>
-              查询表格中选中的这一行
-            </button>
-            {!context?.recordId && <p className="sidebar-help">当前无法识别活动行。请点击该行任意单元格（不要只勾选左侧复选框）后再查询；按钮启用后仍查询不到时，请查看下方失败原因。</p>}
-            <button className="primary wide" disabled={!ready} onClick={() => query('all')}>
-              一键查询当前表全部运单
-            </button>
-            {busy && (
-              <button className="wide" onClick={() => { cancelled.current = true; }}>
-                停止后续查询
-              </button>
-            )}
-            {failed.length > 0 && (
-              <button className="wide" disabled={!ready} onClick={() => query('failed')}>
-                重试失败记录（{failed.length} 条）
-              </button>
-            )}
+          <section className="sidebar-panel sidebar-query-card">
+            <h2>批量查询</h2>
+            <div className="sidebar-segmented" role="group" aria-label="查询触发模式">
+              <button type="button" className={!autoQuery ? 'selected' : ''} onClick={() => setAutoQuery(false)}>手动触发</button>
+              <button type="button" className={autoQuery ? 'selected' : ''} disabled={!ready} onClick={() => setAutoQuery(true)}>自动触发</button>
+            </div>
+            <p className="sidebar-help">{autoQuery ? '边栏打开期间，新增或修改的记录会在单号变化后自动查询并写回。' : '选择查询范围后手动触发，查询结果会写回当前表格。'}</p>
+            {!ready && <p className="sidebar-help">请先完成授权码配置与表格字段匹配。</p>}
+            {ready && !autoQuery && <>
+              <div className="sidebar-query-scopes">
+                <label><input type="radio" name="query-scope" checked={queryScope === 'current'} onChange={() => setQueryScope('current')} />当前选中记录 <span>{previewRows ? previewRows.filter(row => row.id === context?.recordId).length : '…'} 条</span></label>
+                <label><input type="radio" name="query-scope" checked={queryScope === 'empty'} onChange={() => setQueryScope('empty')} />仅无结果的记录 <span>{previewRows ? previewRows.filter(row => !row.info.trim()).length : '…'} 条</span></label>
+                <label><input type="radio" name="query-scope" checked={queryScope === 'all'} onChange={() => setQueryScope('all')} />当前数据表全部记录 <span>{previewRows ? previewRows.length : '…'} 条</span></label>
+              </div>
+              {previewError && <p className="sidebar-help" role="alert">记录预览失败：{previewError}</p>}
+              {queryScope === 'current' && !context?.recordId && <p className="sidebar-help">请点击要查询的行内任意单元格。</p>}
+              <div className="sidebar-query-cost">本次消耗 {requiredQuota} 次 <span>查询后剩余 {billing?.remainingQuota === null ? '不限' : Math.max(0, (billing?.remainingQuota ?? 0) - requiredQuota)} 次</span></div>
+              {quotaInsufficient && <p className="sidebar-quota-warning">当前额度 {billing?.remainingQuota ?? 0} 次，本次需要 {requiredQuota} 次，请先领取体验额度或充值。</p>}
+              <button type="button" className="primary sidebar-run-query" disabled={!ready || !previewRows || requiredQuota === 0 || quotaInsufficient || (queryScope === 'current' && !context?.recordId)} onClick={() => void query(queryScope)}>开始查询 {requiredQuota} 条</button>
+            </>}
+            {autoQuery && ready && <div className="sidebar-auto-status">自动触发已开启 · 等待表格记录变化<button type="button" onClick={() => setAutoQuery(false)}>暂停自动查询</button></div>}
+            {busy && <button type="button" className="sidebar-stop-query" onClick={() => { cancelled.current = true; }}>停止后续查询</button>}
           </section>
         </>
       )}
@@ -1010,8 +1123,8 @@ export default function Sidebar() {
         </div>
       </section>
 
-      {/* 运行状态信息：仅在执行中、有失败/完成或查询反馈时显示，静态引导文案不显示 */}
-      {message && (busy || message.includes('失败') || message.includes('完成') || message.includes('错误') || message.includes('写回')) && (
+      {/* 所有操作状态和错误都可见，避免用户误以为按钮无响应。 */}
+      {message && (
         <div className="sidebar-message" role="status">{message}</div>
       )}
 
@@ -1042,22 +1155,24 @@ export default function Sidebar() {
         </section>
       )}
 
-      {/* 弹窗 1：系统初始化配置（授权码配置，精准对齐截图 4） */}
+      </main>
+
+      {/* 弹窗 1：系统初始化配置（授权码配置） */}
       {authModalOpen && (
         <div className="sidebar-modal-backdrop" role="presentation">
-          <div className="sidebar-modal" role="dialog" aria-modal="true" aria-label="系统初始化配置">
+          <div className="sidebar-modal sidebar-auth-modal" role="dialog" aria-modal="true" aria-label="系统初始化配置">
             <div className="sidebar-modal-header">
               <h2>系统初始化配置</h2>
-              <button className="sidebar-modal-close" aria-label="关闭" onClick={() => setAuthModalOpen(false)}>×</button>
+              <button className="sidebar-modal-close" aria-label="关闭" onClick={closeAuth}>×</button>
             </div>
             <div className="sidebar-modal-body">
               <div className="sidebar-auth-alert">
-                系统尚未初始化。请输入您的飞书个人授权码 (Personal Base Token) 以连接 Bitable 数据表。
+                首次使用请输入飞书多维表格授权码，验证后保存在当前浏览器中，并按企业和多维表格区分；下次自动连接。
               </div>
               <label>
                 个人授权码
                 <input
-                  type="text"
+                  type="password"
                   autoComplete="off"
                   value={code}
                   disabled={busy}
@@ -1065,24 +1180,50 @@ export default function Sidebar() {
                   placeholder="请输入飞书个人授权码 (Personal Base Token)"
                 />
               </label>
+              {authError && <div className="sidebar-auth-error" role="alert">{authError}</div>}
+              {busy && <div className="sidebar-auth-loading" role="status">正在验证授权码并读取当前表格字段，请稍候…</div>}
               <div className="sidebar-auth-guide">
                 <h4>如何获取授权码？</h4>
-                <ul className="sidebar-auth-steps">
-                  <li><span className="sidebar-auth-step-num">1</span>点击多维表格右上角的「插件」，然后点击「自定义插件」</li>
-                  <li><span className="sidebar-auth-step-num">2</span>在弹窗列表中找到当前插件并点击「获取授权码」</li>
-                  <li><span className="sidebar-auth-step-num">3</span>复制生成的个人授权码并粘贴到上方输入框</li>
-                </ul>
+                <ol className="sidebar-auth-steps">
+                  {[
+                    ['第一步', '点击多维表格右上角的拼图图标，选择底部「自定义插件」'],
+                    ['第二步', '点击上方「获取授权码」'],
+                    ['第三步', '勾选「启用授权码」'],
+                    ['第四步', '点击「复制」，再粘贴到上方输入框'],
+                  ].map(([step, description], index) => (
+                    <li className="sidebar-auth-step" key={step}>
+                      <div className="sidebar-auth-step-title">
+                        <span className="sidebar-auth-step-num">{index + 1}</span>
+                        <span>{description}</span>
+                      </div>
+                      <img src={`${import.meta.env.BASE_URL}guide/auth-step-${index + 1}.png`} alt={`${step}：${description}`} loading="lazy" />
+                    </li>
+                  ))}
+                </ol>
               </div>
-              <div className="sidebar-modal-actions">
-                <button type="button" onClick={() => setAuthModalOpen(false)}>取消</button>
-                <button type="button" className="primary" disabled={!code.trim() || busy} onClick={() => void connect()}>
-                  确定
-                </button>
-              </div>
+            </div>
+            <div className="sidebar-modal-actions">
+              <button type="button" onClick={closeAuth}>取消</button>
+              <button type="button" className="primary" disabled={!code.trim() || busy} onClick={() => void connect()}>
+                {busy ? '正在连接…' : '确定'}
+              </button>
             </div>
           </div>
         </div>
       )}
+
+      {helpOpen && <div className="sidebar-modal-backdrop" role="presentation">
+        <div className="sidebar-modal sidebar-help-modal" role="dialog" aria-modal="true" aria-label="使用教程">
+          <div className="sidebar-modal-header"><h2>使用教程</h2><button className="sidebar-modal-close" aria-label="关闭" onClick={() => setHelpOpen(false)}>×</button></div>
+          <div className="sidebar-modal-body">
+            <a className="sidebar-help-gif-link" href={`${import.meta.env.BASE_URL}guide/sidebar-workflow.gif`} target="_blank" rel="noopener noreferrer" aria-label="查看原尺寸使用教程动图">
+              <img className="sidebar-help-gif" src={`${import.meta.env.BASE_URL}guide/sidebar-workflow.gif`} alt="运单助手使用流程动图" />
+            </a>
+            <p className="sidebar-help-gif-hint">点击动图可查看原尺寸。</p>
+          </div>
+          <div className="sidebar-modal-actions"><button type="button" onClick={() => setHelpOpen(false)}>关闭</button></div>
+        </div>
+      </div>}
 
       {/* 弹窗 2：兑换码兑换（精准对齐截图 3） */}
       {couponModalOpen && (
@@ -1128,22 +1269,23 @@ export default function Sidebar() {
           <div className="sidebar-modal" role="dialog" aria-modal="true">
             <div className="sidebar-modal-header">
               <h2>完善企业信息</h2>
-              <button className="sidebar-modal-close" onClick={() => { setEnterpriseOpen(false); setPendingPurchase(null); setPendingTrial(false); setPendingRecharge(false); }}>×</button>
+              <button className="sidebar-modal-close" onClick={() => { setEnterpriseOpen(false); setPendingPurchase(null); setPendingTrial(false); }}>×</button>
             </div>
             <div className="sidebar-modal-body">
               <p className="sidebar-help">企业名称用于识别企业授权归属与开票开通，必填；企业类型可选。</p>
               <label>
                 企业名称（必填）
-                <input value={enterpriseName} onChange={e => setEnterpriseName(e.target.value)} maxLength={256} placeholder="如：西藏高原安生物科技有限公司" />
+                <input value={enterpriseName} onChange={e => setEnterpriseName(e.target.value)} maxLength={256} />
               </label>
               <label>
                 企业类型（选填）
                 <input value={enterpriseType} onChange={e => setEnterpriseType(e.target.value)} maxLength={256} placeholder="如：电商物流 / 供应链" />
               </label>
+              {enterpriseError && <p className="sidebar-quota-warning" role="alert">{enterpriseError}</p>}
               <div className="sidebar-modal-actions">
-                <button type="button" onClick={() => { setEnterpriseOpen(false); setPendingPurchase(null); setPendingTrial(false); setPendingRecharge(false); }}>取消</button>
+                <button type="button" onClick={() => { setEnterpriseOpen(false); setPendingPurchase(null); setPendingTrial(false); }}>取消</button>
                 <button type="button" className="primary" disabled={!enterpriseName.trim() || busy || paymentBusy} onClick={() => void submitEnterprise()}>
-                  {pendingPurchase ? '登记并继续支付' : pendingRecharge ? '登记并继续充值' : pendingTrial ? '登记并领取 15 次' : '提交保存'}
+                  {pendingPurchase ? '登记并继续支付' : pendingTrial ? '登记并领取 15 次' : '提交保存'}
                 </button>
               </div>
             </div>
@@ -1152,7 +1294,7 @@ export default function Sidebar() {
       )}
 
       {/* 弹窗 4：充值续费（受控套餐列表，紧凑单屏无滚动） */}
-      {rechargeOpen && (
+      {rechargeOpen && !enterpriseOpen && (
         <div className="sidebar-modal-backdrop" role="presentation">
           <div className="sidebar-modal" role="dialog" aria-modal="true" aria-label="充值续费">
             <div className="sidebar-modal-header">
@@ -1368,28 +1510,23 @@ export default function Sidebar() {
         <div className="sidebar-modal-backdrop" role="presentation">
           <div className="sidebar-modal" role="dialog" aria-modal="true">
             <div className="sidebar-modal-header">
-              <h2>领取免费试用套餐</h2>
+              <h2>领取 15 次体验额度</h2>
               <button className="sidebar-modal-close" onClick={() => {
                 setTrialOfferOpen(false);
+                setEnterpriseName('');
               }}>×</button>
             </div>
             <div className="sidebar-modal-body">
-              <p className="sidebar-help">
-                {isEnterpriseFilled
-                  ? `检测到当前企业已登记（${enterprise?.name}），新企业可免费领取 15 次物流轨迹查询额度。是否现在开通？`
-                  : '新企业/团队可免费领取 15 次物流轨迹查询额度。是否现在开通？'}
-              </p>
+              <p className="sidebar-help">每个企业限领一次，即时到账，用完不自动扣费。是否领取 15 次免费查询额度？</p>
               <div className="sidebar-modal-actions">
                 <button type="button" onClick={() => {
                   setTrialOfferOpen(false);
+                  setEnterpriseName('');
                 }}>
                   暂不领取
                 </button>
-                <button type="button" className="primary" onClick={() => {
-                  setTrialOfferOpen(false);
-                  void claimTrial();
-                }}>
-                  立即领取 15 次
+                <button type="button" className="primary" disabled={busy} onClick={() => { setTrialOfferOpen(false); void claimTrial(); }}>
+                  确认领取
                 </button>
               </div>
             </div>
