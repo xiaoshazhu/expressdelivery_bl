@@ -12,14 +12,15 @@ type RechargePlan = { plan_id: string; name: string; quota?: number; days?: numb
 type PaymentOrder = { orderId: string; amount: number; qrImage?: string | null; isMock?: boolean; notice?: string };
 type Announcement = { id: string; title: string; content: string; level?: string; linkUrl?: string; updatedAt?: string | null };
 
-const FALLBACK_PLANS: RechargePlan[] = [
-  { plan_id: 'express_1000', name: '1,000 次查询包', billing_type: 'quota', quota: 1000, price: 12, enabled: true, description: '1,000 次快递查询额度（折合 0.012元/次）' },
-  { plan_id: 'express_5000', name: '5,000 次查询包', billing_type: 'quota', quota: 5000, price: 50, enabled: true, description: '5,000 次快递查询额度（折合 0.010元/次）' },
-  { plan_id: 'express_10000', name: '10,000 次查询包', billing_type: 'quota', quota: 10000, price: 90, enabled: true, description: '10,000 次快递查询额度（折合 0.009元/次）' },
-];
-
 const API_BASE = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const apiUrl = (path: string) => `${API_BASE}${path}`;
+
+function apiError(value: any, status: number, route: string): string {
+  const detail = typeof value?.error === 'string' ? value.error : value?.error?.message || value?.message || value?.msg;
+  const code = value?.error?.code || value?.code;
+  const suffix = code && code !== 0 ? `（${code}）` : '';
+  return detail ? `${detail}${suffix}（HTTP ${status}，/api/${route}）` : `接口请求失败（HTTP ${status}，/api/${route}）`;
+}
 
 async function post<T>(route: string, body: unknown, token = '', timeoutMs = 30000, externalSignal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
@@ -39,8 +40,8 @@ async function post<T>(route: string, body: unknown, token = '', timeoutMs = 300
       signal: controller.signal,
     });
   } catch (error) {
-    if (controller.signal.aborted) throw new Error('连接超时，请检查宝塔 Node 项目是否运行，再重试');
-    throw error;
+    if (controller.signal.aborted) throw new Error(`接口 /api/${route} 请求超时，请检查网络与后端连接`);
+    throw new Error(`无法连接接口 /api/${route}，请检查后端地址、服务状态和网络连接`);
   } finally {
     window.clearTimeout(timer);
     externalSignal?.removeEventListener('abort', abort);
@@ -48,7 +49,7 @@ async function post<T>(route: string, body: unknown, token = '', timeoutMs = 300
   let value: any;
   try { value = await response.json(); }
   catch { throw new Error(`服务器返回异常（HTTP ${response.status}），请检查 Node 项目日志`); }
-  if (!response.ok) throw new Error(value.error?.message || value.message || '请求失败');
+  if (!response.ok) throw new Error(apiError(value, response.status, route));
   return value;
 }
 
@@ -120,8 +121,6 @@ export default function Sidebar() {
 
   const [rechargeOpen, setRechargeOpen] = useState(false);
   const [rechargePlans, setRechargePlans] = useState<RechargePlan[]>([]);
-  const [rechargeLoading, setRechargeLoading] = useState(false);
-  const [rechargeError, setRechargeError] = useState('');
 
   const [paymentPlan, setPaymentPlan] = useState<RechargePlan | null>(null);
   const [paymentOrder, setPaymentOrder] = useState<PaymentOrder | null>(null);
@@ -671,20 +670,18 @@ export default function Sidebar() {
   async function openRecharge() {
     const key = currentTenant();
     if (!key) { setMessage('未获取到当前租户标识'); return; }
-    setRechargeOpen(true);
-    setRechargeLoading(true);
-    setRechargeError('');
+    setRechargeOpen(false);
+    setRechargePlans([]);
     try {
       const response = await fetch(apiUrl(`/api/license/status?tenant=${encodeURIComponent(key)}`));
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error?.message || '读取套餐失败');
+      if (!response.ok) throw new Error(apiError(result, response.status, 'license/status'));
+      if (!Array.isArray(result.config?.plans)) throw new Error('套餐配置无效');
       const plans = (result.config?.plans || []) as RechargePlan[];
       setRechargePlans(plans.filter(plan => plan.enabled && plan.billing_type === 'quota' && plan.price > 0));
+      setRechargeOpen(true);
     } catch (error) {
-      setRechargePlans(FALLBACK_PLANS);
-      setRechargeError(`平台配置同步异常，显示预设套餐（${error instanceof Error ? error.message : '网络故障'}）`);
-    } finally {
-      setRechargeLoading(false);
+      setMessage(`无法读取充值套餐：${error instanceof Error ? error.message : '网络故障'}。请检查服务连接后重试。`);
     }
   }
 
@@ -1302,15 +1299,6 @@ export default function Sidebar() {
               <button className="sidebar-modal-close" aria-label="关闭" onClick={() => setRechargeOpen(false)}>×</button>
             </div>
             <div className="sidebar-modal-body">
-              {rechargeLoading ? (
-                <p className="sidebar-help">正在同步平台套餐配置…</p>
-              ) : (
-                <>
-                  {rechargeError && (
-                    <p className="sidebar-help" role="alert" style={{ color: '#d9363e' }}>
-                      {rechargeError} <button type="button" onClick={() => void openRecharge()}>重试</button>
-                    </p>
-                  )}
                   <div className="sidebar-recharge-grid">
                     {offerEligible && (
                       <div className="sidebar-recharge-card" key="plan_trial_15" style={{ borderColor: '#52c41a', background: 'rgba(82, 196, 26, 0.05)' }}>
@@ -1342,8 +1330,6 @@ export default function Sidebar() {
                     ))}
                     {!offerEligible && rechargePlans.length === 0 && <p className="sidebar-help">目前没有可购买的套餐。</p>}
                   </div>
-                </>
-              )}
             </div>
           </div>
         </div>

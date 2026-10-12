@@ -7,7 +7,7 @@
 - 代码仓库：本仓库；前端入口为 `dist/index.html`。
 - 自建服务的边栏地址：`https://express-delivery.anhuishuzhi.com/app/`。
 - `server/` 提供授权连接、物流查询、企业信息、额度及支付接口；仅发布静态前端不会启动这些接口。
-- 如果飞书平台将前端部署到其他域名，构建前设置 `VITE_API_BASE_URL=https://express-delivery.anhuishuzhi.com`，使前端请求指向已部署的后端。使用上述 `/app/` 地址时前后端同源，无需设置此变量。
+- 发布构建通过 `.env.production` 将前端 API 请求指向 `https://express-delivery.anhuishuzhi.com`。从 GitHub 源码重新构建或提交 `dist/` 都使用此公网后端；更换后端域名时更新该文件并重新执行 `pnpm build`。
 
 ## 使用流程
 
