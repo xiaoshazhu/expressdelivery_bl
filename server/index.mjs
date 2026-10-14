@@ -355,7 +355,7 @@ export function createServer(options = {}) {
         if (url.pathname === '/api/pay/wechat/create-order' || url.pathname === '/api/pay/create-order') {
           const tenantKey = requiredTenant(data?.tenantKey);
           const enterprise = await billing.enterpriseStatus(tenantKey);
-          if (!enterprise.registered || !enterprise.name?.trim() || enterprise.name === '-') throw new ApiError(403, 'ENTERPRISE_REQUIRED', '请先完善企业信息后再充值');
+          if (!enterprise.lookupUnavailable && (!enterprise.registered || !enterprise.name?.trim() || enterprise.name === '-')) throw new ApiError(403, 'ENTERPRISE_REQUIRED', '请先完善企业信息后再充值');
           const order = await billing.createOrder({ tenantKey, planId: data?.planId, payChannel: 'wxpay' });
           if (billing.external) return send(200, order);
           const config = await billing.getConfig();

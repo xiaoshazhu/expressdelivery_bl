@@ -98,6 +98,29 @@ test('阿里云拒绝手机号或查询失败时不返回轨迹', async () => {
   }
 });
 
+test('申通查询无需手机号，单号校验失败也不误报手机号错误', async () => {
+  let submitted;
+  const success = createAliyunKzExpressProvider({ appCode: 'test', fetchImpl: async (_url, options) => {
+    submitted = options.body;
+    return new Response(JSON.stringify({ success: true, code: 200, data: {
+      cpCode: 'STO', mailNo: '773123456789', logisticsCompanyName: '申通快递', theLastMessage: '已揽收',
+    } }));
+  } });
+  const result = await success.query({ number: '773123456789', carrier: '自动识别', phone: '' });
+  assert.equal(result.carrierCode, 'STO');
+  assert.equal(submitted.has('mobile'), false);
+  assert.equal(submitted.has('cpCode'), false);
+
+  const failed = createAliyunKzExpressProvider({ appCode: 'test', fetchImpl: async () => new Response(JSON.stringify({
+    success: false, code: 400, msg: '申通单号校验失败',
+  })) });
+  await assert.rejects(failed.query({ number: '773123456789', carrier: '自动识别', phone: '' }), error => {
+    assert.equal(error.code, 'PROVIDER_ERROR');
+    assert.match(error.message, /申通单号校验失败/);
+    return true;
+  });
+});
+
 test('阿里云空轨迹或错误运单号不作为查询成功', async () => {
   const cases = [
     [{ success: true, code: 200, data: { cpCode: 'JD', mailNo: 'JD1234567890', logisticsTraceDetailList: [] } }, 'NO_TRACKING'],

@@ -92,7 +92,10 @@ export function createAliyunKzExpressProvider({ appCode, fetchImpl = fetch, endp
       if (!success || !payload.data) {
         const detail = messageOf(payload, '未知错误');
         if (/quota|exhausted|次数|额度/i.test(detail)) throw new ApiError(402, 'PROVIDER_QUOTA_EXHAUSTED', '阿里云市场快递查询套餐次数已用完，请续购当前商品');
-        if (/手机号|手机号码|mobile|验证|校验/i.test(detail)) throw new ApiError(400, 'PHONE_INVALID', '阿里云未通过单号与手机号查询；请核对本行手机号及快递公司');
+        if (/手机(?:号|号码|后四位|验证|校验)|mobile|phone/i.test(detail)) {
+          if (!mobile) throw new ApiError(400, 'PHONE_REQUIRED', `阿里云接口要求核验手机号：${detail}`);
+          throw new ApiError(400, 'PHONE_INVALID', `阿里云未通过手机号核验：${detail}`);
+        }
         if (/无轨迹|未查询|不存在|暂无/i.test(detail)) throw new ApiError(404, 'NO_TRACKING', '暂未查询到物流轨迹，请核对快递公司、单号及是否已经发货');
         throw new ApiError(422, 'PROVIDER_ERROR', `阿里云快递查询失败：${detail}`);
       }

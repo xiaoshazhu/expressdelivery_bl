@@ -1,5 +1,6 @@
 export type Row = { id: string; number: string; info: string; carrier?: string; phone?: string; state?: 'success' | 'error' | 'loading'; error?: string };
-export type Mapping = { number: string; info: string; carrier?: string; phone?: string; time?: string };
+export type OutputKey = 'summary' | 'trackingNumber' | 'carrierName' | 'carrierCode' | 'status' | 'latest' | 'queriedAt' | 'trace';
+export type Mapping = { number: string; info: string; carrier?: string; phone?: string; trigger?: string; outputs?: Partial<Record<OutputKey, string>> };
 export type Field = { id: string; name: string; type: number };
 export type QueryResult = {
   number: string;

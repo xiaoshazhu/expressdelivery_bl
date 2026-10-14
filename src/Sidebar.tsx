@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Selection } from '@lark-base-open/js-sdk';
-import type { Field, Mapping, QueryResult, Row } from './types';
+import type { Field, Mapping, OutputKey, QueryResult, Row } from './types';
 import './sidebar.css';
 
 type Context = { baseId: string; tableId: string; name: string; recordId: string | null };
 type Session = { token: string; fields: Field[] };
-type AutoQueryResult = ({ queried: true } & QueryResult) | { queried: false; skipped: true; code: string; reason: string };
-type BillingStatus = { active: boolean; enforced: boolean; trialClaimed?: boolean; billingType: 'quota' | 'duration' | null; usedQuota: number; maxQuota: number; remainingQuota: number | null; expireTime: string | null };
-type EnterpriseStatus = { registered: boolean; name: string; enterpriseType?: string };
+type BillingStatus = { active: boolean; enforced: boolean; trialClaimed?: boolean; trialClaimedAt?: string | null; billingType: 'quota' | 'duration' | null; usedQuota: number; maxQuota: number; remainingQuota: number | null; expireTime: string | null };
+type EnterpriseStatus = { registered: boolean; name: string; enterpriseType?: string; lookupUnavailable?: boolean };
 type RechargePlan = { plan_id: string; name: string; quota?: number; days?: number; price: number; enabled: boolean; billing_type: string; description?: string };
 type PaymentOrder = { orderId: string; amount: number; qrImage?: string | null; isMock?: boolean; notice?: string };
 type Announcement = { id: string; title: string; content: string; level?: string; linkUrl?: string; updatedAt?: string | null };
+type QueryProgress = { phase: 'loading' | 'running' | 'done'; total: number; done: number; success: number; failed: number; skipped: number; failures: { number: string; reason: string }[]; error?: string; stopped?: boolean };
 
 const API_BASE = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const apiUrl = (path: string) => `${API_BASE}${path}`;
@@ -20,6 +20,34 @@ function apiError(value: any, status: number, route: string): string {
   const code = value?.error?.code || value?.code;
   const suffix = code && code !== 0 ? `（${code}）` : '';
   return detail ? `${detail}${suffix}（HTTP ${status}，/api/${route}）` : `接口请求失败（HTTP ${status}，/api/${route}）`;
+}
+
+function readableQueryError(error: unknown): string {
+  const message = error instanceof Error ? error.message : '查询失败，请稍后重试。';
+  const code = message.match(/（([A-Z][A-Z0-9_]+)）/)?.[1];
+  if (code === 'PHONE_REQUIRED')
+    return '该运单需要手机号核验。请在“核验手机号”列填写收件人或寄件人手机号（完整号码或后四位），再重新查询。';
+  if (code === 'INVALID_PHONE' || code === 'PHONE_INVALID')
+    return '手机号格式有误或与运单不匹配，请核对“核验手机号”列后重新查询。';
+  if (code === 'INVALID_NUMBER') return '快递单号格式有误，请核对后重新查询。';
+  if (['QUOTA_EXHAUSTED', 'QUOTA_INSUFFICIENT', 'BILLING_EXHAUSTED', 'BILLING_REQUIRED'].includes(code || '')) return '查询额度不足，请先领取体验额度或充值。';
+  if (code === 'RECORD_CHANGED') return '查询期间这条记录已被修改，请重新查询。';
+  if (code === 'FIELD_MAPPING') return '表格字段已变化，请重新匹配快递单号、手机号和快递信息字段。';
+  if (code === 'NO_TRACKING') return '暂未查到这条运单的物流轨迹，请核对单号或稍后重试。';
+  if (['UNKNOWN_CARRIER', 'CARRIER_NOT_RECOGNIZED', 'UNSUPPORTED_CARRIER', 'INVALID_CARRIER'].includes(code || '')) return '暂时无法识别这条运单的快递公司，请核对单号。';
+  if (code === 'PROVIDER_NUMBER_MISMATCH' || code === 'PROVIDER_CARRIER_MISMATCH') return '快递公司返回的运单信息与当前记录不一致，请核对单号。';
+  if (code === 'PROVIDER_RATE_LIMIT' || code === 'RATE_LIMIT') return '查询服务当前繁忙，请稍后重试。';
+  if (code === 'PROVIDER_ERROR' && /单号.{0,6}(校验|错误|有误|不存在)/.test(message)) return '快递单号未通过快递公司校验，请核对后重新查询。';
+  if (code?.startsWith('PROVIDER_')) return '快递查询服务暂时不可用，请稍后重试。';
+  if (code === 'FEISHU_ERROR' || code === 'PAGINATION') return '读取飞书表格失败，请检查授权和表格权限后重试。';
+  return message.replace(/（[A-Z][A-Z0-9_]+）/g, '').replace(/（HTTP\s*\d+[^）]*）/gi, '').trim() || '查询失败，请稍后重试。';
+}
+
+function hasCurrentResult(row: Row): boolean {
+  const info = row.info.trim();
+  if (!info) return false;
+  const queriedNumber = info.match(/^运单号：([^\n]+)/m)?.[1]?.trim();
+  return !queriedNumber || queriedNumber === row.number.trim();
 }
 
 async function post<T>(route: string, body: unknown, token = '', timeoutMs = 30000, externalSignal?: AbortSignal): Promise<T> {
@@ -62,25 +90,69 @@ function formatQuota(num?: number | null): string {
   return num.toLocaleString();
 }
 
+function formatClaimTime(value: string, short = false): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date);
+  const part = (type: string) => parts.find(item => item.type === type)?.value || '';
+  const monthDay = `${part('month')}-${part('day')}`;
+  return short ? `${monthDay} ${part('hour')}:${part('minute')}` : `${part('year')}-${monthDay} ${part('hour')}:${part('minute')}`;
+}
+
+function lookupUnavailable(error: unknown): boolean {
+  const status = (error as Error & { status?: number })?.status;
+  return status === undefined || status === 429 || status >= 500;
+}
+
 const DEFAULT_TENANT_KEY = '';
 const trialOfferSeenKey = (tenant: string) => `express-sidebar:trial-offer-seen:${tenant}`;
 const authCodeKey = (tenant: string, baseId: string) => `express-sidebar:auth:${tenant}:${baseId}`;
+const batchConfigKey = (baseId: string, tableId: string) => `express-sidebar:batch-config:${baseId}:${tableId}`;
+function savedBatchConfig(baseId: string, tableId: string): Record<string, any> {
+  try { return JSON.parse(window.localStorage.getItem(batchConfigKey(baseId, tableId)) || '{}'); } catch { return {}; }
+}
 type FieldNameKey = 'number' | 'phone' | 'info';
 const DEFAULT_FIELD_NAMES: Record<FieldNameKey, string> = {
-  number: '快递单号', phone: '核验手机号', info: '快递信息',
+  number: '快递单号', phone: '', info: '快递信息',
 };
 const FIELD_ALIASES: Record<FieldNameKey, string[]> = {
   number: ['快递单号', '运单号'], phone: ['核验手机号', '手机号码', '手机号'],
   info: ['快递信息', '物流查询结果', '物流信息'],
 };
+const OUTPUT_FIELDS: { key: OutputKey; label: string; type: number }[] = [
+  { key: 'summary', label: '物流摘要', type: 1 },
+  { key: 'trackingNumber', label: '快递单号', type: 1 },
+  { key: 'carrierName', label: '快递公司', type: 1 },
+  { key: 'carrierCode', label: '快递公司编码', type: 1 },
+  { key: 'status', label: '物流状态', type: 1 },
+  { key: 'latest', label: '最新轨迹', type: 1 },
+  { key: 'queriedAt', label: '查询时间', type: 5 },
+  { key: 'trace', label: '完整轨迹', type: 1 },
+];
 function matchField(fields: Field[], key: FieldNameKey): Field | undefined {
-  return FIELD_ALIASES[key].map(name => fields.find(field => field.name === name && field.type === 1)).find(Boolean);
+  return FIELD_ALIASES[key].map(name => fields.find(field => field.name === name && (key === 'info' ? field.type === 1 : field.type === 1 || field.type === 2))).find(Boolean);
 }
 function mappingFromFields(fields: Field[]): Mapping {
   return {
     number: matchField(fields, 'number')?.id || '', info: matchField(fields, 'info')?.id || '',
     phone: matchField(fields, 'phone')?.id || '',
+    outputs: Object.fromEntries(OUTPUT_FIELDS.map(({ key, label, type }) => [key, fields.find(field => field.name === label && (key === 'trackingNumber' ? [1, 2].includes(field.type) : field.type === type))?.id || ''])) as Mapping['outputs'],
   };
+}
+function configuredMapping(fields: Field[], saved: Record<string, any>): Mapping {
+  const mapping = mappingFromFields(fields);
+  for (const key of ['number', 'phone', 'info'] as FieldNameKey[]) {
+    const name = saved.fieldNames?.[key];
+    if (typeof name !== 'string') continue;
+    mapping[key] = fields.find(field => field.name === name && (key === 'info' ? field.type === 1 : [1, 2].includes(field.type)))?.id || '';
+  }
+  mapping.carrier = fields.find(field => field.name === saved.carrierInput && [1, 2].includes(field.type))?.id || '';
+  mapping.trigger = fields.find(field => field.name === saved.triggerInput && [1, 2].includes(field.type))?.id || '';
+  mapping.outputs = saved.moreInfo === false ? {} : Object.fromEntries(Object.entries(mapping.outputs || {}).filter(([key]) => saved.outputEnabled?.[key] !== false)) as Mapping['outputs'];
+  return mapping;
 }
 
 function hasSeenTrialOffer(tenant: string): boolean {
@@ -112,6 +184,7 @@ export default function Sidebar() {
   const [couponMessage, setCouponMessage] = useState<{ text: string; success: boolean } | null>(null);
 
   const [trialOfferOpen, setTrialOfferOpen] = useState(false);
+  const [trialError, setTrialError] = useState('');
   const [enterpriseOpen, setEnterpriseOpen] = useState(false);
   const [enterpriseName, setEnterpriseName] = useState('');
   const [enterpriseType, setEnterpriseType] = useState('');
@@ -121,6 +194,7 @@ export default function Sidebar() {
 
   const [rechargeOpen, setRechargeOpen] = useState(false);
   const [rechargePlans, setRechargePlans] = useState<RechargePlan[]>([]);
+  const [rechargeError, setRechargeError] = useState('');
 
   const [paymentPlan, setPaymentPlan] = useState<RechargePlan | null>(null);
   const [paymentOrder, setPaymentOrder] = useState<PaymentOrder | null>(null);
@@ -164,6 +238,18 @@ export default function Sidebar() {
   const [mapping, setMapping] = useState<Mapping>({ number: '', info: '' });
   const [knownFields, setKnownFields] = useState<Field[]>([]);
   const [fieldNames, setFieldNames] = useState(DEFAULT_FIELD_NAMES);
+  const [outputEnabled, setOutputEnabled] = useState<Record<OutputKey, boolean>>(Object.fromEntries(OUTPUT_FIELDS.map(field => [field.key, true])) as Record<OutputKey, boolean>);
+  const [moreInfo, setMoreInfo] = useState(true);
+  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [carrierInput, setCarrierInput] = useState('');
+  const [triggerInput, setTriggerInput] = useState('');
+  const loadedConfigKey = useRef('');
+  useEffect(() => {
+    if (!context) return;
+    const key = batchConfigKey(context.baseId, context.tableId);
+    if (loadedConfigKey.current !== key) return;
+    try { window.localStorage.setItem(key, JSON.stringify({ fieldNames, outputEnabled, moreInfo, autoUpdate, carrierInput, triggerInput })); } catch { /* Storage may be unavailable. */ }
+  }, [context?.baseId, context?.tableId, fieldNames, outputEnabled, moreInfo, autoUpdate, carrierInput, triggerInput]);
   const [fieldsOpen, setFieldsOpen] = useState(true);
   const [initialized, setInitialized] = useState(false);
   const [queryScope, setQueryScope] = useState<'current' | 'empty' | 'all'>('current');
@@ -172,15 +258,12 @@ export default function Sidebar() {
   const [previewNonce, setPreviewNonce] = useState(0);
   const [trialPanelOpen, setTrialPanelOpen] = useState(true);
   const [carrier, setCarrier] = useState('自动识别');
-  const [autoQuery, setAutoQuery] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const lock = useRef(false);
   const cancelled = useRef(false);
-  const [message, setMessage] = useState('');
-  const [progress, setProgress] = useState({ done: 0, total: 0, ok: 0, failed: 0, skipped: 0 });
-  const [failed, setFailed] = useState<Row[]>([]);
-  const [last, setLast] = useState<QueryResult | null>(null);
+  const [, setMessage] = useState('');
+  const [queryProgress, setQueryProgress] = useState<QueryProgress | null>(null);
   const revision = useRef(0);
   const recognize = useRef<() => Promise<void>>(async () => { });
 
@@ -283,9 +366,11 @@ export default function Sidebar() {
           const next = { ...previous, recordId: selection.recordId };
           active.current = next;
           setContext(next);
+          setPreviewNonce(value => value + 1);
           return;
         }
         revision.current++;
+        loadedConfigKey.current = '';
         cancelled.current = true;
         const old = credential.current;
         credential.current = null;
@@ -297,11 +382,11 @@ export default function Sidebar() {
         setMapping({ number: '', info: '' });
         setKnownFields([]);
         setFieldNames(DEFAULT_FIELD_NAMES);
+        setCarrierInput('');
+        setTriggerInput('');
         setInitialized(false);
         setPreviewRows(null);
-        setLast(null);
-        setFailed([]);
-        setProgress({ done: 0, total: 0, ok: 0, failed: 0, skipped: 0 });
+        setQueryProgress(null);
         if (!selection.baseId || !selection.tableId) {
           setMessage('请先在飞书左侧选择一个数据表。');
           return;
@@ -310,15 +395,23 @@ export default function Sidebar() {
         const name = await table.getName();
         if (disposed || request !== sequence) return;
         const next = { baseId: selection.baseId, tableId: selection.tableId, recordId: selection.recordId, name };
+        const saved = savedBatchConfig(next.baseId, next.tableId);
+        setFieldNames({ ...DEFAULT_FIELD_NAMES, ...(saved.fieldNames || {}) });
+        setMoreInfo(saved.moreInfo !== false);
+        setAutoUpdate(saved.autoUpdate !== false);
+        setOutputEnabled({ ...Object.fromEntries(OUTPUT_FIELDS.map(field => [field.key, true])), ...(saved.outputEnabled || {}) } as Record<OutputKey, boolean>);
+        setCarrierInput(typeof saved.carrierInput === 'string' ? saved.carrierInput : '');
+        setTriggerInput(typeof saved.triggerInput === 'string' ? saved.triggerInput : '');
         active.current = next;
         setContext(next);
         void table.getFieldMetaList().then(items => {
           if (disposed || request !== sequence || credential.current) return;
           const existingFields: Field[] = items.map(field => ({ id: field.id, name: field.name, type: Number(field.type) }));
           setKnownFields(existingFields);
-          setMapping(mappingFromFields(existingFields));
+          setMapping(configuredMapping(existingFields, saved));
           setFieldNames(Object.fromEntries((Object.keys(DEFAULT_FIELD_NAMES) as FieldNameKey[])
-            .map(key => [key, matchField(existingFields, key)?.name || DEFAULT_FIELD_NAMES[key]])) as Record<FieldNameKey, string>);
+            .map(key => [key, saved.fieldNames?.[key] ?? matchField(existingFields, key)?.name ?? DEFAULT_FIELD_NAMES[key]])) as Record<FieldNameKey, string>);
+          loadedConfigKey.current = batchConfigKey(next.baseId, next.tableId);
         }).catch(() => { /* 授权前无法读取字段时，连接成功后由服务端同步。 */ });
         // 重要：切勿将 tenantKey 设为 selection.baseId（baseId 是数据表 AppToken，非企业组织 TenantKey）
         setMessage('');
@@ -400,73 +493,6 @@ export default function Sidebar() {
     else setAuthModalOpen(true);
   }, [embedded, context?.baseId, context?.tableId, tenantKey, session?.token]);
 
-  // 7. 自动查询监听
-  useEffect(() => {
-    if (!embedded || !autoQuery || !context?.tableId || !session || !mapping.number || !mapping.info || mapping.number === mapping.info) return;
-    let disposed = false;
-    const version = revision.current;
-    const timers = new Map<string, number>();
-    const running = new Set<string>();
-    const rerun = new Set<string>();
-    const off: (() => void)[] = [];
-
-    const execute = async (recordId: string) => {
-      timers.delete(recordId);
-      if (disposed || version !== revision.current) return;
-      if (running.has(recordId)) { rerun.add(recordId); return; }
-      const currentSession = credential.current;
-      if (!currentSession) return;
-      running.add(recordId);
-      try {
-        const result = await post<AutoQueryResult>('base/auto-query-record', { recordId, mapping, carrier }, currentSession.token);
-        if (disposed || version !== revision.current) return;
-        if (result.queried) {
-          setLast(result);
-          setMessage(`已自动查询并写回：${result.number} · ${result.carrier}`);
-          void refreshBilling();
-        } else {
-          setMessage(`自动查询已等待：${result.reason}`);
-        }
-      } catch (error) {
-        if (!disposed && version === revision.current) setMessage(`自动查询失败：${error instanceof Error ? error.message : '请求失败'}`);
-      } finally {
-        running.delete(recordId);
-        if (rerun.delete(recordId) && !disposed) schedule(recordId);
-      }
-    };
-
-    const schedule = (recordId: string, delay = 1200) => {
-      if (!recordId || disposed) return;
-      const old = timers.get(recordId);
-      if (old) window.clearTimeout(old);
-      timers.set(recordId, window.setTimeout(() => void execute(recordId), delay));
-    };
-
-    import('@lark-base-open/js-sdk').then(async ({ bitable }) => {
-      const table = await bitable.base.getTableById(context.tableId);
-      if (disposed) return;
-      off.push(table.onRecordAdd(event => event.data.forEach(recordId => schedule(recordId))));
-      off.push(table.onRecordModify(event => {
-        const watched = new Set([mapping.number, mapping.phone, mapping.carrier].filter(Boolean));
-        if (event.data.fieldIds.some(fieldId => watched.has(fieldId))) schedule(event.data.recordId);
-      }));
-      void post<{ rows: Row[] }>('base/rows', { mapping }, session.token)
-        .then(({ rows }) => {
-          if (!disposed) rows.filter(row => row.number.trim() && !row.info.trim())
-            .forEach((row, index) => schedule(row.id, 1200 + index * 650));
-        })
-        .catch(error => { if (!disposed) setMessage(`自动扫描失败：${error instanceof Error ? error.message : '读取记录失败'}`); });
-    }).catch(() => {
-      if (!disposed) setMessage('自动查询监听启动失败，请重新打开插件。');
-    });
-
-    return () => {
-      disposed = true;
-      timers.forEach(timer => window.clearTimeout(timer));
-      off.forEach(fn => fn());
-    };
-  }, [embedded, autoQuery, context?.tableId, session?.token, mapping.number, mapping.info, mapping.phone, mapping.carrier, carrier]);
-
   // 8. 轮询订单支付状态
   useEffect(() => {
     if (!paymentOrder?.orderId || paymentPaid) return;
@@ -500,7 +526,7 @@ export default function Sidebar() {
   }, [paymentPaid]);
 
   // 执行通用业务动作
-  async function act(task: (version: number) => Promise<void>) {
+  async function act(task: (version: number) => Promise<void>, onError?: (message: string) => void) {
     if (lock.current) return;
     lock.current = true;
     setBusy(true);
@@ -515,6 +541,7 @@ export default function Sidebar() {
           setSession(null);
         }
         setMessage(msg);
+        onError?.(msg);
       }
     } finally {
       lock.current = false;
@@ -556,11 +583,13 @@ export default function Sidebar() {
       setKnownFields(result.fields);
       try { window.localStorage.setItem(authCodeKey(currentTenant(), current.baseId), targetCode); } catch { /* Storage may be unavailable. */ }
       closeAuth();
-      setMapping(mappingFromFields(result.fields));
+      const saved = savedBatchConfig(current.baseId, current.tableId);
+      setMapping(configuredMapping(result.fields, saved));
       setInitialized(false);
       setFieldNames(Object.fromEntries((Object.keys(DEFAULT_FIELD_NAMES) as FieldNameKey[])
-        .map(key => [key, matchField(result.fields, key)?.name || DEFAULT_FIELD_NAMES[key]])) as Record<FieldNameKey, string>);
-      setFieldsOpen(!mappingFromFields(result.fields).number || !mappingFromFields(result.fields).info);
+        .map(key => [key, saved.fieldNames?.[key] ?? matchField(result.fields, key)?.name ?? DEFAULT_FIELD_NAMES[key]])) as Record<FieldNameKey, string>);
+      loadedConfigKey.current = batchConfigKey(current.baseId, current.tableId);
+      setFieldsOpen(true);
       setMessage('已完成授权配置并连接数据表！');
       if (offerEligible && !hasSeenTrialOffer(currentTenant())) {
         markTrialOfferSeen(currentTenant());
@@ -587,7 +616,7 @@ export default function Sidebar() {
   async function enterpriseForAction(tenant: string): Promise<EnterpriseStatus> {
     const response = await fetch(apiUrl(`/api/enterprise/status?tenant=${encodeURIComponent(tenant)}`));
     const value = await response.json();
-    if (!response.ok) throw new Error(value.error?.message || '检查企业信息失败，请重试');
+    if (!response.ok) throw Object.assign(new Error(value.error?.message || '检查企业信息失败，请重试'), { status: response.status });
     setEnterprise(value);
     return value;
   }
@@ -604,20 +633,26 @@ export default function Sidebar() {
   async function claimTrial(registeredNow = false) {
     const trustedTenant = currentTenant();
     if (!trustedTenant) {
-      setMessage('未获取到当前租户标识');
+      setTrialError('未获取到当前租户标识');
       return;
     }
+    setTrialError('');
     let registeredEnterprise = enterprise;
+    let enterpriseLookupUnavailable = false;
     if (!registeredNow) {
       try { registeredEnterprise = await enterpriseForAction(trustedTenant); }
-      catch (error) { setMessage(error instanceof Error ? error.message : '查询企业信息失败'); return; }
-      if (!registeredEnterprise.registered || !registeredEnterprise.name?.trim() || registeredEnterprise.name === '-') {
+      catch (error) {
+        if (!lookupUnavailable(error)) { setTrialError(error instanceof Error ? error.message : '查询企业信息失败'); return; }
+        enterpriseLookupUnavailable = true;
+      }
+      enterpriseLookupUnavailable ||= Boolean(registeredEnterprise?.lookupUnavailable);
+      if (!enterpriseLookupUnavailable && (!registeredEnterprise?.registered || !registeredEnterprise.name?.trim() || registeredEnterprise.name === '-')) {
         showEnterpriseForm('trial');
         return;
       }
     }
     const resolvedName = (registeredNow ? enterpriseName : registeredEnterprise?.name || '').trim();
-    if (!resolvedName) { setMessage('请填写企业名称后领取'); return; }
+    if (!resolvedName && !enterpriseLookupUnavailable) { setTrialError('请填写企业名称后领取'); return; }
     await act(async () => {
       const value = await post<BillingStatus & { registered?: boolean; enterprise?: EnterpriseStatus }>('billing/claim-trial', {
         tenantKey: trustedTenant,
@@ -635,7 +670,7 @@ export default function Sidebar() {
       setOfferEligible(false);
       setBilling(value);
       setMessage('试用套餐已领取，已为您开通 15 次免费查询额度！');
-    });
+    }, setTrialError);
   }
 
   // 兑换码兑换
@@ -672,6 +707,7 @@ export default function Sidebar() {
     if (!key) { setMessage('未获取到当前租户标识'); return; }
     setRechargeOpen(false);
     setRechargePlans([]);
+    setRechargeError('');
     try {
       const response = await fetch(apiUrl(`/api/license/status?tenant=${encodeURIComponent(key)}`));
       const result = await response.json();
@@ -689,11 +725,15 @@ export default function Sidebar() {
   async function startPurchase(plan: RechargePlan, skipEnterpriseCheck = false) {
     const key = currentTenant();
     setPaymentError('');
+    setRechargeError('');
     if (!skipEnterpriseCheck) {
-      let registeredEnterprise: EnterpriseStatus;
+      let registeredEnterprise: EnterpriseStatus | null = null;
       try { registeredEnterprise = await enterpriseForAction(key); }
-      catch (error) { setMessage(error instanceof Error ? error.message : '查询企业信息失败'); return; }
-      if (!registeredEnterprise.registered || !registeredEnterprise.name?.trim() || registeredEnterprise.name === '-') {
+      catch (error) {
+        if (!lookupUnavailable(error)) { setRechargeError(error instanceof Error ? error.message : '查询企业信息失败'); return; }
+        // 企业查询不可用时直接尝试原支付流程。
+      }
+      if (registeredEnterprise && !registeredEnterprise.lookupUnavailable && (!registeredEnterprise.registered || !registeredEnterprise.name?.trim() || registeredEnterprise.name === '-')) {
         showEnterpriseForm('purchase', plan);
         return;
       }
@@ -798,7 +838,12 @@ export default function Sidebar() {
   async function initialize() {
     await act(async version => {
       if (!session) return;
-      const result = await post<{ mapping: Mapping; fields: Field[] }>('base/initialize', { fieldNames }, session.token);
+      const fieldId = (name: string) => knownFields.find(field => field.name === name && [1, 2].includes(field.type))?.id || '';
+      const result = await post<{ mapping: Mapping; fields: Field[] }>('base/initialize', {
+        fieldNames,
+        optionalMapping: { carrier: fieldId(carrierInput), trigger: fieldId(triggerInput) },
+        enabledOutputs: moreInfo ? OUTPUT_FIELDS.filter(field => outputEnabled[field.key]).map(field => field.key) : [],
+      }, session.token);
       if (version !== revision.current) return;
       setMapping(result.mapping);
       setKnownFields(result.fields);
@@ -814,9 +859,11 @@ export default function Sidebar() {
 
   function skipInitialize() {
     const fields = session?.fields || knownFields;
-    const next = Object.fromEntries((Object.keys(fieldNames) as FieldNameKey[]).map(key => [
-      key, fields.find(field => field.name === fieldNames[key].trim() && field.type === 1)?.id || '',
-    ])) as Mapping;
+    const findField = (key: FieldNameKey) => fields.find(field => field.name === fieldNames[key].trim() && (key === 'info' ? field.type === 1 : field.type === 1 || field.type === 2))?.id || '';
+    const next: Mapping = { number: findField('number'), phone: findField('phone'), info: findField('info') };
+    next.carrier = fields.find(field => field.name === carrierInput && [1, 2].includes(field.type))?.id || '';
+    next.trigger = fields.find(field => field.name === triggerInput && [1, 2].includes(field.type))?.id || '';
+    next.outputs = moreInfo ? Object.fromEntries(OUTPUT_FIELDS.filter(field => outputEnabled[field.key]).map(field => [field.key, fields.find(candidate => candidate.name === field.label && (field.key === 'trackingNumber' ? [1, 2].includes(candidate.type) : candidate.type === field.type))?.id || '']).filter(([, id]) => id)) as Mapping['outputs'] : {};
     setMapping(next);
     setFieldsOpen(false);
     setInitialized(false);
@@ -825,7 +872,7 @@ export default function Sidebar() {
 
   // 执行查询
   const targetsForScope = (rows: Row[], scope: 'current' | 'empty' | 'all', selectedId: string | null) =>
-    scope === 'current' ? rows.filter(row => row.id === selectedId) : scope === 'empty' ? rows.filter(row => !row.info.trim()) : rows;
+    scope === 'current' ? rows.filter(row => row.id === selectedId) : scope === 'empty' ? rows.filter(row => !hasCurrentResult(row)) : rows;
 
   useEffect(() => {
     if (!session || !mapping.number || !mapping.info || mapping.number === mapping.info) {
@@ -841,54 +888,93 @@ export default function Sidebar() {
       if (!disposed) setPreviewError(error instanceof Error ? error.message : '读取记录失败');
     });
     return () => { disposed = true; };
-  }, [session?.token, mapping.number, mapping.phone, mapping.info, mapping.carrier, mapping.time, previewNonce]);
+  }, [session?.token, mapping.number, mapping.phone, mapping.info, mapping.carrier, mapping.trigger, mapping.outputs, previewNonce]);
+
+  // 飞书表格变化时刷新数量；开启自动更新后，只查询输入字段有变化且尚无结果的记录。
+  useEffect(() => {
+    if (!embedded || !session || !context?.tableId) return;
+    let disposed = false;
+    let timer: number | undefined;
+    const off: (() => void)[] = [];
+    const pending = new Map<string, number>();
+    const querying = new Set<string>();
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => { if (!disposed) setPreviewNonce(value => value + 1); }, 350);
+    };
+    const autoQuery = (recordId: string) => {
+      if (!autoUpdate || !mapping.number || !mapping.info || !/^rec[A-Za-z0-9]+$/.test(recordId)) return;
+      window.clearTimeout(pending.get(recordId));
+      pending.set(recordId, window.setTimeout(() => {
+        pending.delete(recordId);
+        if (disposed || querying.has(recordId)) return;
+        querying.add(recordId);
+        void post('base/auto-query-record', { recordId, mapping, carrier }, session.token).then(() => {
+          if (!disposed) { schedule(); void refreshBilling(); }
+        }).catch(() => { if (!disposed) schedule(); }).finally(() => querying.delete(recordId));
+      }, 700));
+    };
+    void import('@lark-base-open/js-sdk').then(async ({ bitable }) => {
+      const table = await bitable.base.getTableById(context.tableId);
+      if (disposed) return;
+      off.push(table.onRecordAdd(event => { schedule(); const id = event.data?.[0]; if (id) autoQuery(id); }));
+      off.push(table.onRecordModify(event => {
+        schedule();
+        const { recordId, fieldIds } = event.data || {};
+        if (recordId && !fieldIds?.includes(mapping.info) && fieldIds?.some(id => [mapping.number, mapping.phone, mapping.carrier, mapping.trigger].includes(id))) autoQuery(recordId);
+      }));
+      off.push(table.onRecordDelete(schedule));
+    }).catch(() => { /* 用户切换选中记录时仍会刷新预览。 */ });
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      pending.forEach(timeout => window.clearTimeout(timeout));
+      off.forEach(unsubscribe => unsubscribe());
+    };
+  }, [embedded, session?.token, context?.tableId, autoUpdate, mapping.number, mapping.phone, mapping.carrier, mapping.trigger, mapping.info, mapping.outputs, carrier]);
 
   async function query(scope: 'current' | 'empty' | 'all') {
+    setQueryProgress({ phase: 'loading', total: 0, done: 0, success: 0, failed: 0, skipped: 0, failures: [] });
     await act(async version => {
       if (!session) return;
       cancelled.current = false;
-      setLast(null);
-      setMessage('正在读取当前数据表中的记录…');
       const { rows } = await post<{ rows: Row[] }>('base/rows', { mapping }, session.token);
       if (version !== revision.current) return;
       const currentId = active.current?.recordId;
       const targets = targetsForScope(rows, scope, currentId || null);
       if (!targets.length) throw new Error(scope === 'current' ? '请先在飞书表格中点击需要查询的那一行。' : '没有可查询的记录。');
-      const requiredQuota = targets.filter(row => row.number.trim()).length;
+      const requiredQuota = targets.filter(row => row.number.trim() && !hasCurrentResult(row)).length;
       if (billing?.billingType === 'quota' && (billing.remainingQuota ?? 0) < requiredQuota) throw new Error(`当前额度不足：本次需要 ${requiredQuota} 次，剩余 ${billing.remainingQuota ?? 0} 次。请先领取体验额度或充值。`);
-      const failures: Row[] = [];
-      const stats = { done: 0, total: targets.length, ok: 0, failed: 0, skipped: 0 };
-      setProgress({ ...stats });
-      setFailed([]);
+      const stats: QueryProgress = { phase: 'running', done: 0, total: targets.length, success: 0, failed: 0, skipped: 0, failures: [] };
+      setQueryProgress({ ...stats });
       for (const row of targets) {
         if (cancelled.current || version !== revision.current) break;
-        if (!row.number.trim()) stats.skipped++;
+        if (!row.number.trim() || hasCurrentResult(row)) stats.skipped++;
         else {
-          setMessage(`正在查询 ${stats.done + 1}/${stats.total}：${row.number}`);
           try {
-            const result = await post<QueryResult>('base/query-record', { recordId: row.id, mapping, carrier }, session.token);
-            stats.ok++;
-            if (version === revision.current) setLast(result);
-            void refreshBilling();
+            const result = await post<QueryResult | { skipped: true; reason: string }>('base/query-record', { recordId: row.id, mapping, carrier: row.carrier || carrier }, session.token);
+            if ('skipped' in result && result.skipped) stats.skipped++;
+            else stats.success++;
           } catch (error) {
             stats.failed++;
-            failures.push({ ...row, error: error instanceof Error ? error.message : '查询失败' });
+            stats.failures.push({ number: row.number, reason: readableQueryError(error) });
           }
         }
         stats.done++;
         if (version !== revision.current) return;
-        setProgress({ ...stats });
-        setFailed([...failures]);
+        setQueryProgress({ ...stats, failures: [...stats.failures] });
         if (stats.done < stats.total) await new Promise(resolve => setTimeout(resolve, 550));
       }
-      if (version === revision.current) setMessage(`${cancelled.current ? '已停止后续查询' : '查询完成'}：成功 ${stats.ok}，失败 ${stats.failed}，空单号跳过 ${stats.skipped}。成功结果已写入飞书表格。`);
+      if (version !== revision.current) return;
+      setQueryProgress({ ...stats, phase: 'done', stopped: cancelled.current, failures: [...stats.failures] });
+      void refreshBilling();
       setPreviewNonce(value => value + 1);
-    });
+    }, error => setQueryProgress(previous => ({ ...(previous || { total: 0, done: 0, success: 0, failed: 0, skipped: 0, failures: [] }), phase: 'done', error: readableQueryError(new Error(error)) })));
   }
 
   const ready = !!session && !!mapping.number && !!mapping.info && mapping.number !== mapping.info && !busy;
   const previewTargets = previewRows ? targetsForScope(previewRows, queryScope, context?.recordId || null) : [];
-  const requiredQuota = previewTargets.filter(row => row.number.trim()).length;
+  const requiredQuota = previewTargets.filter(row => row.number.trim() && !hasCurrentResult(row)).length;
   const quotaInsufficient = billing?.billingType === 'quota' && requiredQuota > (billing.remainingQuota ?? 0);
 
   return (
@@ -988,13 +1074,15 @@ export default function Sidebar() {
 
         <div className="sidebar-trial-fold">
           <button type="button" className="sidebar-trial-toggle" onClick={() => setTrialPanelOpen(value => !value)}>
-            <span>免费体验额度{billing?.trialClaimed ? '（已领取）' : ''}</span><span>{trialPanelOpen ? '▲' : '▼'}</span>
+            <span>免费体验额度{billing?.trialClaimed ? `（已领取${billing.trialClaimedAt && formatClaimTime(billing.trialClaimedAt, true) ? ` · ${formatClaimTime(billing.trialClaimedAt, true)}` : ''}）` : ''}</span><span>{trialPanelOpen ? '▲' : '▼'}</span>
           </button>
           {trialPanelOpen && <div className="sidebar-trial-content">
             <p>每个企业限领 15 次，免费使用。</p>
             <button type="button" className="primary" disabled={!offerEligible} onClick={() => { setEnterpriseName(''); setTrialOfferOpen(true); }}>
               {billing?.trialClaimed ? '已领取' : '获取体验额度'}
             </button>
+            {billing?.trialClaimed && <p className="sidebar-trial-claimed-at">领取时间：{billing.trialClaimedAt && formatClaimTime(billing.trialClaimedAt) || '历史领取未保存时间'}</p>}
+            {trialError && <p className="sidebar-quota-warning" role="alert">{trialError}</p>}
           </div>}
         </div>
       </section>
@@ -1038,34 +1126,46 @@ export default function Sidebar() {
               <h2>批量配置</h2>
               <span className={ready ? 'sidebar-status ready' : 'sidebar-status'}>{session ? (mapping.number && mapping.info ? '已就绪' : '待初始化表格') : '待授权'}</span>
             </div>
-            <p className="sidebar-help">当前数据表：{context?.name || '等待飞书连接…'}。系统按单号自动识别快递公司，需要手机号核验时读取对应字段。</p>
+            <p className="sidebar-help">当前数据表：{context?.name || '等待飞书连接…'}。选择输入字段，并按需写入物流详情。</p>
             {!session && <div className="sidebar-auth-needed">
               <p>尚未完成授权码配置，暂不能配置字段与查询。</p>
               <button type="button" className="primary" onClick={openAuth}>去配置授权码</button>
             </div>}
             <div className={session ? 'sidebar-field-box' : 'sidebar-field-box disabled'}>
               <button type="button" className="sidebar-field-toggle" disabled={!session} onClick={() => setFieldsOpen(value => !value)}>
-                <span>✎　初始化表格结构</span>
+                <span>✎　字段与输出配置</span>
                 <span className={mapping.number && mapping.info ? 'sidebar-status ready' : 'sidebar-status'}>{mapping.number && mapping.info ? (initialized ? '已初始化' : '已匹配') : '未初始化'}</span>
                 <span>{fieldsOpen ? '▲' : '▼'}</span>
               </button>
               {fieldsOpen ? <div className="sidebar-field-body">
-                <p className="sidebar-help">已读取当前表格的 {knownFields.length} 个字段。已有同名文本字段直接复用，缺少的字段才会创建，不覆盖数据。</p>
+                <p className="sidebar-help">已读取当前表格的 {knownFields.length} 个字段。可选择已有文本或数字字段；结果字段缺失时会自动创建。</p>
                 {knownFields.length > 0 && <p className="sidebar-known-fields">现有字段：{knownFields.map(field => field.name).join('、')}</p>}
                 {([
-                  ['number', '快递单号字段名称（必填）'],
-                  ['phone', '核验手机号字段名称（顺丰／跨越等必填）'],
-                  ['info', '快递信息字段名称'],
+                  ['number', '快递单号'],
+                  ['phone', '核验手机号（可选）'],
+                  ['info', '快递信息（完整结果）'],
                 ] as [FieldNameKey, string][]).map(([key, label]) => (
                   <label key={key}>{label}
-                    <input value={fieldNames[key]} disabled={!session || busy} onChange={e => setFieldNames(previous => ({ ...previous, [key]: e.target.value }))} />
+                    <input list={`sidebar-fields-${key}`} value={fieldNames[key]} placeholder={key === 'phone' ? '不使用时留空' : undefined} disabled={!session || busy} onChange={e => setFieldNames(previous => ({ ...previous, [key]: e.target.value }))} />
+                    <datalist id={`sidebar-fields-${key}`}>{knownFields.filter(field => key === 'info' ? field.type === 1 : field.type === 1 || field.type === 2).map(field => <option key={field.id} value={field.name} />)}</datalist>
                   </label>
                 ))}
+                <details className="sidebar-optional-field"><summary>快递公司字段（可选）</summary>
+                  <select value={carrierInput} disabled={busy} onChange={e => setCarrierInput(e.target.value)}><option value="">自动识别</option>{knownFields.filter(field => [1, 2].includes(field.type)).map(field => <option key={field.id} value={field.name}>{field.name}</option>)}</select>
+                </details>
+                <details className="sidebar-optional-field"><summary>刷新触发字段（可选）</summary>
+                  <select value={triggerInput} disabled={busy} onChange={e => setTriggerInput(e.target.value)}><option value="">不使用</option>{knownFields.filter(field => [1, 2].includes(field.type)).map(field => <option key={field.id} value={field.name}>{field.name}</option>)}</select>
+                </details>
+                <label className="sidebar-config-switch"><input type="checkbox" checked={moreInfo} onChange={e => setMoreInfo(e.target.checked)} />获取更多信息</label>
+                {moreInfo && <div className="sidebar-output-fields">{OUTPUT_FIELDS.map(field => <label key={field.key}><span>{field.label}</span><input type="checkbox" checked={outputEnabled[field.key]} onChange={e => setOutputEnabled(previous => ({ ...previous, [field.key]: e.target.checked }))} /></label>)}</div>}
+                {moreInfo && <p className="sidebar-help">勾选的详情会写入同名字段；“快递单号”沿用输入字段。</p>}
+                <label className="sidebar-config-switch"><input type="checkbox" checked={autoUpdate} onChange={e => setAutoUpdate(e.target.checked)} />自动更新</label>
+                {autoUpdate && <p className="sidebar-help">新增记录或修改单号、手机号等输入字段时，自动查询尚无结果的记录；已查询的记录不会重复扣次。</p>}
                 <div className="sidebar-field-actions">
-                  <button type="button" className="primary" disabled={!session || busy} onClick={() => void initialize()}>{busy ? '正在处理…' : '初始化表格结构'}</button>
-                  <button type="button" disabled={!session || busy} onClick={skipInitialize}>跳过</button>
+                  <button type="button" className="primary" disabled={!session || busy} onClick={() => void initialize()}>{busy ? '正在处理…' : '保存配置并创建字段'}</button>
+                  <button type="button" disabled={!session || busy} onClick={skipInitialize}>匹配已有字段</button>
                 </div>
-                <p className="sidebar-help">如果现有字段名称不同，可修改上方名称后点“跳过”直接匹配。</p>
+                <p className="sidebar-help">可从现有字段中选择，也可输入新名称。手机号字段留空即可跳过；如需保存上方详情字段，请点击“保存配置并创建字段”。</p>
               </div> : <p className="sidebar-field-summary">已按【{(['number', 'phone', 'info'] as FieldNameKey[]).filter(key => Boolean(mapping[key])).map(key => fieldNames[key]).join(' / ') || '尚未匹配字段'}】建立字段，点击展开可修改字段名称或重新初始化。</p>}
             </div>
             {session && <button type="button" className="sidebar-disconnect" disabled={busy} onClick={() => act(async () => {
@@ -1079,26 +1179,21 @@ export default function Sidebar() {
 
           <section className="sidebar-panel sidebar-query-card">
             <h2>批量查询</h2>
-            <div className="sidebar-segmented" role="group" aria-label="查询触发模式">
-              <button type="button" className={!autoQuery ? 'selected' : ''} onClick={() => setAutoQuery(false)}>手动触发</button>
-              <button type="button" className={autoQuery ? 'selected' : ''} disabled={!ready} onClick={() => setAutoQuery(true)}>自动触发</button>
-            </div>
-            <p className="sidebar-help">{autoQuery ? '边栏打开期间，新增或修改的记录会在单号变化后自动查询并写回。' : '选择查询范围后手动触发，查询结果会写回当前表格。'}</p>
+            <p className="sidebar-help">选择查询范围后点击开始查询，结果会写回当前表格。</p>
             {!ready && <p className="sidebar-help">请先完成授权码配置与表格字段匹配。</p>}
-            {ready && !autoQuery && <>
+            {ready && <>
               <div className="sidebar-query-scopes">
                 <label><input type="radio" name="query-scope" checked={queryScope === 'current'} onChange={() => setQueryScope('current')} />当前选中记录 <span>{previewRows ? previewRows.filter(row => row.id === context?.recordId).length : '…'} 条</span></label>
-                <label><input type="radio" name="query-scope" checked={queryScope === 'empty'} onChange={() => setQueryScope('empty')} />仅无结果的记录 <span>{previewRows ? previewRows.filter(row => !row.info.trim()).length : '…'} 条</span></label>
-                <label><input type="radio" name="query-scope" checked={queryScope === 'all'} onChange={() => setQueryScope('all')} />当前数据表全部记录 <span>{previewRows ? previewRows.length : '…'} 条</span></label>
+                <label><input type="radio" name="query-scope" checked={queryScope === 'empty'} onChange={() => setQueryScope('empty')} />仅无结果的记录 <span>{previewRows ? previewRows.filter(row => !hasCurrentResult(row)).length : '…'} 条</span></label>
+                <label><input type="radio" name="query-scope" checked={queryScope === 'all'} onChange={() => setQueryScope('all')} />整列（当前数据表） <span>{previewRows ? previewRows.length : '…'} 条</span></label>
               </div>
               {previewError && <p className="sidebar-help" role="alert">记录预览失败：{previewError}</p>}
               {queryScope === 'current' && !context?.recordId && <p className="sidebar-help">请点击要查询的行内任意单元格。</p>}
               <div className="sidebar-query-cost">本次消耗 {requiredQuota} 次 <span>查询后剩余 {billing?.remainingQuota === null ? '不限' : Math.max(0, (billing?.remainingQuota ?? 0) - requiredQuota)} 次</span></div>
               {quotaInsufficient && <p className="sidebar-quota-warning">当前额度 {billing?.remainingQuota ?? 0} 次，本次需要 {requiredQuota} 次，请先领取体验额度或充值。</p>}
               <button type="button" className="primary sidebar-run-query" disabled={!ready || !previewRows || requiredQuota === 0 || quotaInsufficient || (queryScope === 'current' && !context?.recordId)} onClick={() => void query(queryScope)}>开始查询 {requiredQuota} 条</button>
+              {previewRows && previewTargets.length > 0 && requiredQuota === 0 && <p className="sidebar-help">所选记录已有结果或没有单号，无需重复查询。</p>}
             </>}
-            {autoQuery && ready && <div className="sidebar-auto-status">自动触发已开启 · 等待表格记录变化<button type="button" onClick={() => setAutoQuery(false)}>暂停自动查询</button></div>}
-            {busy && <button type="button" className="sidebar-stop-query" onClick={() => { cancelled.current = true; }}>停止后续查询</button>}
           </section>
         </>
       )}
@@ -1120,39 +1215,33 @@ export default function Sidebar() {
         </div>
       </section>
 
-      {/* 所有操作状态和错误都可见，避免用户误以为按钮无响应。 */}
-      {message && (
-        <div className="sidebar-message" role="status">{message}</div>
-      )}
-
-      {progress.total > 0 && (
-        <section className="sidebar-panel">
-          <progress max={progress.total} value={progress.done} style={{ width: '100%', height: '8px' }} />
-          <p>{progress.done} / {progress.total} · 成功 {progress.ok} · 失败 {progress.failed} · 空单号跳过 {statsSkipped(progress.skipped)}</p>
-        </section>
-      )}
-
-      {failed.length > 0 && (
-        <section className="sidebar-panel">
-          <h2>异常排查</h2>
-          {failed.slice(0, 10).map(row => (
-            <p className="sidebar-help" key={row.id}><b>{row.number}</b>：{row.error}</p>
-          ))}
-        </section>
-      )}
-
-      {last && (
-        <section className="sidebar-panel">
-          <h2>最新查询轨迹</h2>
-          <strong>{last.number} · {last.carrier}</strong>
-          <p className="sidebar-help">{last.summary}</p>
-          {last.events.slice(0, 5).map((e, i) => (
-            <p className="sidebar-help" key={i}>{e.content}<br /><span style={{ fontSize: '11px', color: '#999' }}>{new Date(e.time).toLocaleString()}</span></p>
-          ))}
-        </section>
-      )}
-
       </main>
+
+      {queryProgress && <div className="sidebar-modal-backdrop" role="presentation">
+        <div className="sidebar-modal sidebar-query-modal" role="dialog" aria-modal="true" aria-label="批量查询进度">
+          <div className="sidebar-modal-body">
+            {queryProgress.phase !== 'done' && <div className="sidebar-query-spinner" aria-hidden="true" />}
+            <h2>{queryProgress.phase === 'done' ? queryProgress.stopped ? '查询已停止' : queryProgress.error ? '查询未完成' : '查询完成' : '正在批量处理…'}</h2>
+            <div className="sidebar-query-percent">{queryProgress.total ? Math.round(queryProgress.done / queryProgress.total * 100) : 0}%</div>
+            <div className="sidebar-query-track" role="progressbar" aria-valuenow={queryProgress.done} aria-valuemin={0} aria-valuemax={queryProgress.total || 1}>
+              <span style={{ width: `${queryProgress.total ? queryProgress.done / queryProgress.total * 100 : 0}%` }} />
+            </div>
+            <p className="sidebar-query-count">已处理 {queryProgress.done} / {queryProgress.total} 条{queryProgress.phase === 'loading' ? ' · 正在读取表格' : ''}</p>
+            <div className="sidebar-query-stats" aria-live="polite">
+              <div className="success"><span>成功</span><strong>{queryProgress.success}</strong></div>
+              <div className="failed"><span>失败</span><strong>{queryProgress.failed}</strong></div>
+              <div className="skipped"><span>跳过</span><strong>{queryProgress.skipped}</strong></div>
+            </div>
+            {queryProgress.phase === 'running' && <p className="sidebar-query-note">正在处理，请稍候…</p>}
+            {queryProgress.stopped && <p className="sidebar-query-note">剩余 {queryProgress.total - queryProgress.done} 条未处理。</p>}
+            {queryProgress.error && <p className="sidebar-query-failure" role="alert">{queryProgress.error}</p>}
+            {queryProgress.failures.length > 0 && <div className="sidebar-query-failures"><strong>失败原因</strong><ul>{queryProgress.failures.map((item, index) => <li key={`${item.number}-${index}`}><b>{item.number}</b>：{item.reason}</li>)}</ul></div>}
+            <div className="sidebar-modal-actions">
+              {queryProgress.phase === 'done' ? <button type="button" className="primary" onClick={() => setQueryProgress(null)}>关闭</button> : <button type="button" disabled={queryProgress.phase === 'loading' || cancelled.current} onClick={() => { cancelled.current = true; setQueryProgress(previous => previous ? { ...previous, stopped: true } : previous); }}>停止后续查询</button>}
+            </div>
+          </div>
+        </div>
+      </div>}
 
       {/* 弹窗 1：系统初始化配置（授权码配置） */}
       {authModalOpen && (
@@ -1300,24 +1389,6 @@ export default function Sidebar() {
             </div>
             <div className="sidebar-modal-body">
                   <div className="sidebar-recharge-grid">
-                    {offerEligible && (
-                      <div className="sidebar-recharge-card" key="plan_trial_15" style={{ borderColor: '#52c41a', background: 'rgba(82, 196, 26, 0.05)' }}>
-                        <div style={{ fontSize: '11px', color: '#52c41a', fontWeight: 'bold' }}>新企业特惠</div>
-                        <strong>免费体验包</strong>
-                        <span>15 次查询</span>
-                        <b style={{ color: '#52c41a' }}>¥0 (免费)</b>
-                        <button
-                          type="button"
-                          style={{ background: '#52c41a', color: '#fff', border: 'none' }}
-                          onClick={() => {
-                            setRechargeOpen(false);
-                            void claimTrial();
-                          }}
-                        >
-                          立即领取 15 次
-                        </button>
-                      </div>
-                    )}
                     {rechargePlans.map(plan => (
                       <div className="sidebar-recharge-card" key={plan.plan_id}>
                         <strong>{plan.name}</strong>
@@ -1328,8 +1399,9 @@ export default function Sidebar() {
                         </button>
                       </div>
                     ))}
-                    {!offerEligible && rechargePlans.length === 0 && <p className="sidebar-help">目前没有可购买的套餐。</p>}
+                    {rechargePlans.length === 0 && <p className="sidebar-help">目前没有可购买的套餐。</p>}
                   </div>
+                  {rechargeError && <p className="sidebar-quota-warning" role="alert">{rechargeError}</p>}
             </div>
           </div>
         </div>
@@ -1521,8 +1593,4 @@ export default function Sidebar() {
       )}
     </div>
   );
-}
-
-function statsSkipped(skipped: number): string {
-  return `${skipped}`;
 }

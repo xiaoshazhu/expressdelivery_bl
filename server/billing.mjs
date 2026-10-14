@@ -126,6 +126,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
     // 优先读取 MySQL platform_license（与 SDK 标准物理表同步）
     if (dbPool) {
       try {
+        await loadState();
         const [rows] = await dbPool.query(
           'SELECT tenant_key, billing_type, used_quota, max_quota, expire_time, trial_claimed FROM platform_license WHERE tenant_key = ?',
           [k]
@@ -165,6 +166,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
           expireTime: record.expire_time,
           active: !expired && (record.billing_type === 'duration' || remainingQuota > 0),
           trialClaimed,
+          trialClaimedAt: trialClaimed ? licenses.get(k)?.trialClaimedAt || null : null,
           enforced: enforce,
           enterprise: enterprises.get(k) || null,
         };
@@ -218,7 +220,11 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
         return { registered: false, name: '', enterpriseType: '' };
       } catch (error) {
         if (error.statusCode === 404) return { registered: false, name: '', enterpriseType: '' };
-        throw new ApiError(503, 'ENTERPRISE_LOOKUP', `查询管理平台企业信息失败：${error.message}`);
+        const status = Number(error.statusCode || error.status || 0);
+        if (status >= 400 && status < 500 && status !== 429) throw new ApiError(status, 'ENTERPRISE_LOOKUP', `查询管理平台企业信息失败：${error.message}`);
+        await loadState();
+        const cached = enterprises.get(k);
+        return { registered: Boolean(cached?.name), name: cached?.name || '', enterpriseType: cached?.enterpriseType || '', lookupUnavailable: true };
       }
     }
     if (platform?.enterpriseStatus) {
@@ -226,8 +232,12 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
         const result = await platform.enterpriseStatus(k);
         const data = result?.data || result;
         return { registered: Boolean(data?.registered ?? data?.name), name: data?.name || data?.enterprise_name || '', enterpriseType: data?.enterpriseType || data?.enterprise_type || '' };
-      } catch {
+      } catch (error) {
+        if (error.status >= 400 && error.status < 500 && error.status !== 429) throw error;
         // 平台未运行或接口不可用时，优雅降级本地状态
+        await loadState();
+        const cached = enterprises.get(k);
+        return { registered: Boolean(cached?.name), name: cached?.name || '', enterpriseType: cached?.enterpriseType || '', lookupUnavailable: true };
       }
     }
     await loadState();
@@ -270,7 +280,7 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
     if (!k) throw new ApiError(400, 'TENANT_REQUIRED', '缺少企业标识');
     await loadState();
     const registered = await enterpriseStatus(k);
-    if (!registered.registered || !registered.name?.trim() || registered.name === '-') {
+    if (!registered.lookupUnavailable && (!registered.registered || !registered.name?.trim() || registered.name === '-')) {
       throw new ApiError(403, 'ENTERPRISE_REQUIRED', '请先完成企业认证，再领取免费额度');
     }
 
@@ -298,7 +308,8 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
     }
     license.maxQuota = (Number(license.maxQuota) || 0) + 15;
     license.trialClaimed = true;
-    license.updatedAt = new Date(now()).toISOString();
+    license.trialClaimedAt = new Date(now()).toISOString();
+    license.updatedAt = license.trialClaimedAt;
     licenses.set(k, license);
     await saveState();
 
