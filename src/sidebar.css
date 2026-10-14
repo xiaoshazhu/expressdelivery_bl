@@ -134,8 +134,13 @@
 .sidebar-known-fields { margin: 5px 0 0; color: #646a73; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .sidebar-field-body label { margin: 10px 0 0; color: #646a73; }
 .sidebar-field-body label input { display: block; margin-top: 5px; }
-.sidebar-field-actions { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 8px; margin-top: 12px; }
-.sidebar-field-actions button { min-height: 36px; padding: 6px 8px; font-size: 12px; white-space: nowrap; }
+.sidebar-field-actions { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); gap: 10px; margin-top: 12px; }
+.sidebar-field-actions button { min-height: 44px; padding: 8px 12px; border-radius: 8px; font-size: 15px; white-space: nowrap; }
+.sidebar-app .sidebar-field-actions button.primary { background: #3370ff; color: #fff; font-size: 15px; font-weight: 600; }
+.sidebar-app .sidebar-field-actions button.primary:hover:not(:disabled) { background: #245bdb; }
+.sidebar-app .sidebar-field-actions button:not(.primary) { border: 1px solid #b8c1d1; background: #fff; color: #4e5969; }
+.sidebar-app .sidebar-field-actions button:not(.primary):hover:not(:disabled) { border-color: #3370ff; color: #3370ff; background: #f0f4ff; }
+.sidebar-app .sidebar-field-actions button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 340px) { .sidebar-field-actions { grid-template-columns: 1fr; } }
 .sidebar-field-summary { padding: 0 12px 10px; color: #646a73; font-size: 12px; line-height: 1.7; }
 .sidebar-optional-field { margin: 10px 0; }

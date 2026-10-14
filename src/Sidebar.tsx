@@ -14,6 +14,7 @@ type QueryProgress = { phase: 'loading' | 'running' | 'done'; total: number; don
 
 const API_BASE = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const apiUrl = (path: string) => `${API_BASE}${path}`;
+const OFFICIAL_GROUP_URL = 'https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=c23v2186-e36c-42c9-a6e3-1bf381411a98';
 
 function apiError(value: any, status: number, route: string): string {
   const detail = typeof value?.error === 'string' ? value.error : value?.error?.message || value?.message || value?.msg;
@@ -46,7 +47,7 @@ function readableQueryError(error: unknown): string {
 function hasCurrentResult(row: Row): boolean {
   const info = row.info.trim();
   if (!info) return false;
-  const queriedNumber = info.match(/^运单号：([^\n]+)/m)?.[1]?.trim();
+  const queriedNumber = info.match(/^运单号：([^\r\n]+)/m)?.[1]?.trim();
   return !queriedNumber || queriedNumber === row.number.trim();
 }
 
@@ -217,7 +218,6 @@ export default function Sidebar() {
   const [provider, setProvider] = useState<{ mode: 'loading' | 'mock' | 'kuaidi100' | 'aliyun_kzexpress' | 'error'; configured: boolean }>({ mode: 'loading', configured: false });
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [globalLinkUrl, setGlobalLinkUrl] = useState('');
-  const [groupUrl, setGroupUrl] = useState('');
   const credential = useRef<Session | null>(null);
   const [code, setCode] = useState('');
   const authAttempt = useRef(0);
@@ -279,14 +279,7 @@ export default function Sidebar() {
   };
 
   const openOfficialGroup = () => {
-    try {
-      const target = new URL(groupUrl);
-      if (target.protocol === 'https:' || target.protocol === 'http:') {
-        window.open(target.href, '_blank', 'noopener,noreferrer');
-        return;
-      }
-    } catch { /* The group link has not been configured yet. */ }
-    setMessage('官方交流群暂未配置，请稍后再试');
+    window.open(OFFICIAL_GROUP_URL, '_blank', 'noopener,noreferrer');
   };
 
   // 1. 服务健康检测与模式识别
@@ -303,7 +296,6 @@ export default function Sidebar() {
       .then(r => (r.ok ? r.json() : null))
       .then(v => {
         if (v?.announcement?.linkUrl) setGlobalLinkUrl(v.announcement.linkUrl);
-        if (v?.groupUrl) setGroupUrl(v.groupUrl);
         if (Array.isArray(v?.announcements)) {
           setAnnouncements(v.announcements);
         } else if (v?.announcement?.text) {
@@ -890,7 +882,7 @@ export default function Sidebar() {
     return () => { disposed = true; };
   }, [session?.token, mapping.number, mapping.phone, mapping.info, mapping.carrier, mapping.trigger, mapping.outputs, previewNonce]);
 
-  // 飞书表格变化时刷新数量；开启自动更新后，只查询输入字段有变化且尚无结果的记录。
+  // 飞书表格变化时刷新数量；开启自动更新后，新增记录与输入字段修改会自动查询。
   useEffect(() => {
     if (!embedded || !session || !context?.tableId) return;
     let disposed = false;
@@ -902,14 +894,15 @@ export default function Sidebar() {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => { if (!disposed) setPreviewNonce(value => value + 1); }, 350);
     };
-    const autoQuery = (recordId: string) => {
+    const autoQuery = (recordId: string, refresh = false) => {
       if (!autoUpdate || !mapping.number || !mapping.info || !/^rec[A-Za-z0-9]+$/.test(recordId)) return;
       window.clearTimeout(pending.get(recordId));
       pending.set(recordId, window.setTimeout(() => {
         pending.delete(recordId);
-        if (disposed || querying.has(recordId)) return;
+        if (disposed) return;
+        if (querying.has(recordId)) { autoQuery(recordId, refresh); return; }
         querying.add(recordId);
-        void post('base/auto-query-record', { recordId, mapping, carrier }, session.token).then(() => {
+        void post('base/auto-query-record', { recordId, mapping, carrier, refresh, requestId: `auto:${recordId}:${Date.now()}` }, session.token).then(() => {
           if (!disposed) { schedule(); void refreshBilling(); }
         }).catch(() => { if (!disposed) schedule(); }).finally(() => querying.delete(recordId));
       }, 700));
@@ -921,7 +914,7 @@ export default function Sidebar() {
       off.push(table.onRecordModify(event => {
         schedule();
         const { recordId, fieldIds } = event.data || {};
-        if (recordId && !fieldIds?.includes(mapping.info) && fieldIds?.some(id => [mapping.number, mapping.phone, mapping.carrier, mapping.trigger].includes(id))) autoQuery(recordId);
+        if (recordId && fieldIds?.some(id => [mapping.number, mapping.phone, mapping.carrier, mapping.trigger].includes(id))) autoQuery(recordId, true);
       }));
       off.push(table.onRecordDelete(schedule));
     }).catch(() => { /* 用户切换选中记录时仍会刷新预览。 */ });
@@ -1160,12 +1153,12 @@ export default function Sidebar() {
                 {moreInfo && <div className="sidebar-output-fields">{OUTPUT_FIELDS.map(field => <label key={field.key}><span>{field.label}</span><input type="checkbox" checked={outputEnabled[field.key]} onChange={e => setOutputEnabled(previous => ({ ...previous, [field.key]: e.target.checked }))} /></label>)}</div>}
                 {moreInfo && <p className="sidebar-help">勾选的详情会写入同名字段；“快递单号”沿用输入字段。</p>}
                 <label className="sidebar-config-switch"><input type="checkbox" checked={autoUpdate} onChange={e => setAutoUpdate(e.target.checked)} />自动更新</label>
-                {autoUpdate && <p className="sidebar-help">新增记录或修改单号、手机号等输入字段时，自动查询尚无结果的记录；已查询的记录不会重复扣次。</p>}
+                {autoUpdate && <p className="sidebar-help">新增记录会自动查询；修改单号、手机号、快递公司或刷新触发字段后，也会自动更新该行快递信息。每次成功查询会消耗额度，边栏关闭后停止自动更新。</p>}
                 <div className="sidebar-field-actions">
-                  <button type="button" className="primary" disabled={!session || busy} onClick={() => void initialize()}>{busy ? '正在处理…' : '保存配置并创建字段'}</button>
-                  <button type="button" disabled={!session || busy} onClick={skipInitialize}>匹配已有字段</button>
+                  <button type="button" className="primary" disabled={!session || busy} onClick={() => void initialize()}>{busy ? '正在处理…' : '初始化表格结构'}</button>
+                  <button type="button" disabled={!session || busy} onClick={skipInitialize}>跳过</button>
                 </div>
-                <p className="sidebar-help">可从现有字段中选择，也可输入新名称。手机号字段留空即可跳过；如需保存上方详情字段，请点击“保存配置并创建字段”。</p>
+                <p className="sidebar-help">可从现有字段中选择，也可输入新名称。手机号字段留空即可跳过；初始化会复用已有字段并创建缺少的字段，“跳过”仅匹配已有字段。</p>
               </div> : <p className="sidebar-field-summary">已按【{(['number', 'phone', 'info'] as FieldNameKey[]).filter(key => Boolean(mapping[key])).map(key => fieldNames[key]).join(' / ') || '尚未匹配字段'}】建立字段，点击展开可修改字段名称或重新初始化。</p>}
             </div>
             {session && <button type="button" className="sidebar-disconnect" disabled={busy} onClick={() => act(async () => {

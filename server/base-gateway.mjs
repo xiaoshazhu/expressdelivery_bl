@@ -122,8 +122,8 @@ export class BaseGateway {
     const initial = unwrap(await this.client.base.appTableRecord.get({ path })).record;
     const number = plain(initial.fields[names.number]).trim();
     const oldInfo = plain(initial.fields[names.info]);
-    const oldQueriedNumber = oldInfo.match(/^运单号：([^\n]+)/m)?.[1]?.trim();
-    if (oldInfo.trim() && (!oldQueriedNumber || oldQueriedNumber === number)) return { skipped: true, reason: '已有查询结果，不重复消耗次数' };
+    const oldQueriedNumber = oldInfo.match(/^运单号：([^\r\n]+)/m)?.[1]?.trim();
+    if (!body.refresh && oldInfo.trim() && (!oldQueriedNumber || oldQueriedNumber === number)) return { skipped: true, reason: '已有查询结果，不重复消耗次数' };
     const carrier = names.carrier ? plain(initial.fields[names.carrier]).trim() || body.carrier : body.carrier;
     const phone = names.phone ? plain(initial.fields[names.phone]) : body.phone;
     const idempotencyKey = typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim() : `record:${this.appToken}:${body.recordId}:${number}`;
@@ -149,7 +149,7 @@ export class BaseGateway {
     const trace = (result.events || []).map(item => `${item.time || ''} ${item.content || ''}${item.location ? `（${item.location}）` : ''}`.trim()).join('\n');
     const values = { summary: result.summary || '', carrierName: result.carrier || '', carrierCode: result.carrierCode || '', status: result.state || '', latest, queriedAt: Date.parse(result.queriedAt), trace };
     for (const [key, fieldName] of Object.entries(names.outputs || {})) {
-      if (key === 'trackingNumber' || fieldName === names.info || fieldName === names.number) continue;
+      if (key === 'trackingNumber' || [names.info, names.number, names.phone, names.carrier, names.trigger].includes(fieldName)) continue;
       if (key === 'queriedAt' && !Number.isFinite(values.queriedAt)) continue;
       fields[fieldName] = values[key] ?? '';
     }
@@ -159,7 +159,7 @@ export class BaseGateway {
 
   async autoQueryRecord(body, service) {
     try {
-      const result = await this.queryRecord(body, service);
+      const result = await this.queryRecord({ ...body, refresh: body.refresh === true }, service);
       return { queried: !result.skipped, ...result };
     } catch (error) {
       // 自动监听时，未填完或格式错误的记录只跳过，不调用物流服务商，也不写入错误文本。

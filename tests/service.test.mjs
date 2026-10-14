@@ -210,6 +210,20 @@ test('已有查询结果时跳过且不调用查询服务或写回', async () =>
   assert.match(result.reason, /不重复消耗/);
   assert.equal(writes.length, 0);
 });
+test('自动更新输入字段后重新查询已有结果并写回新信息', async () => {
+  const { gateway, writes } = fakeGateway({ number: 'SF123456789', info: '快递公司：顺丰速运\n运单号：SF123456789\n旧轨迹' });
+  let calls = 0;
+  const result = await gateway.autoQueryRecord({ recordId: 'rec1', mapping: { number: 'fld1', info: 'fld2' }, refresh: true, requestId: 'auto:rec1:changed' }, {
+    query: async input => {
+      calls++;
+      assert.equal(input.idempotencyKey, 'auto:rec1:changed');
+      return { number: input.number, carrier: '顺丰速运', summary: '运输中', queriedAt: new Date().toISOString(), events: [] };
+    },
+  });
+  assert.equal(result.queried, true);
+  assert.equal(calls, 1);
+  assert.match(writes[0].data.fields['快递信息'], /运输中/);
+});
 test('运单号改变后可查询新运单，同一运单仍不重复查询', async () => {
   const { gateway, writes } = fakeGateway({ number: 'SF123456789', info: '快递公司：顺丰速运\n运单号：SF000000000\n旧轨迹' });
   let calls = 0;
