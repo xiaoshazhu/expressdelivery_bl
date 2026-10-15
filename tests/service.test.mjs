@@ -149,6 +149,19 @@ test('兑换码额度记在最大额度，旧负数使用量无损迁移', async
   assert.equal((await billing.status('new-coupon')).maxQuota, 1010);
   await billing.close();
 });
+test('管理平台兑换失败时不赠送本地模拟额度', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'express-coupon-error-'));
+  const billing = createBilling({
+    configPath: path.join(dir, 'packages.json'),
+    statePath: path.join(dir, 'billing-state.json'),
+    enforce: true,
+    useDb: false,
+    sdk: { redeemCoupon: async () => { throw Object.assign(new Error('HTTP 502'), { statusCode: 502 }); } },
+  });
+  await assert.rejects(billing.redeemCoupon({ tenantKey: 'coupon-error', couponCode: 'VIP-888' }), /兑换服务暂时不可用/);
+  assert.equal((await billing.status('coupon-error')).maxQuota, 0);
+  await billing.close();
+});
 test('MCP 计费四项能力可调用且携带动态金额与幂等键', async () => {
   const requests = [];
   const client = createMcpBillingClient({ baseUrl: 'https://billing.test/api', token: 'test-token', fetchImpl: async (url, options) => {

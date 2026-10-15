@@ -14,13 +14,22 @@ type QueryProgress = { phase: 'loading' | 'running' | 'done'; total: number; don
 
 const API_BASE = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const apiUrl = (path: string) => `${API_BASE}${path}`;
-const OFFICIAL_GROUP_URL = 'https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=c23v2186-e36c-42c9-a6e3-1bf381411a98';
+const OFFICIAL_GROUP_URL = String(import.meta.env.VITE_OFFICIAL_GROUP_URL || '').trim();
 
 function apiError(value: any, status: number, route: string): string {
   const detail = typeof value?.error === 'string' ? value.error : value?.error?.message || value?.message || value?.msg;
   const code = value?.error?.code || value?.code;
   const suffix = code && code !== 0 ? `（${code}）` : '';
   return detail ? `${detail}${suffix}（HTTP ${status}，/api/${route}）` : `接口请求失败（HTTP ${status}，/api/${route}）`;
+}
+
+function readableCouponError(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (/HTTP\s*5\d\d|请求超时|无法连接接口|服务器返回异常/.test(message)) return '兑换服务暂时不可用，请稍后重试。';
+  if (/已使用|已兑换/.test(message)) return '该兑换码已使用，请更换兑换码。';
+  if (/过期|失效/.test(message)) return '该兑换码已过期，请更换兑换码。';
+  if (/无效|不存在|错误/.test(message)) return '兑换码无效，请核对后重试。';
+  return '兑换失败，请核对兑换码后重试。';
 }
 
 function readableQueryError(error: unknown): string {
@@ -679,7 +688,7 @@ export default function Sidebar() {
         tenantKey: key,
         couponCode: couponCode.trim(),
       });
-      setCouponMessage({ text: result.message || '兑换成功！', success: true });
+      setCouponMessage({ text: '兑换成功，额度已到账！', success: true });
       if (result.license) setBilling(result.license);
       setTimeout(() => {
         setCouponModalOpen(false);
@@ -687,7 +696,7 @@ export default function Sidebar() {
         setCouponMessage(null);
       }, 1500);
     } catch (err) {
-      setCouponMessage({ text: err instanceof Error ? err.message : '兑换失败，请检查兑换码是否有效', success: false });
+      setCouponMessage({ text: readableCouponError(err), success: false });
     } finally {
       setCouponBusy(false);
     }
@@ -1139,8 +1148,7 @@ export default function Sidebar() {
                   ['info', '快递信息（完整结果）'],
                 ] as [FieldNameKey, string][]).map(([key, label]) => (
                   <label key={key}>{label}
-                    <input list={`sidebar-fields-${key}`} value={fieldNames[key]} placeholder={key === 'phone' ? '不使用时留空' : undefined} disabled={!session || busy} onChange={e => setFieldNames(previous => ({ ...previous, [key]: e.target.value }))} />
-                    <datalist id={`sidebar-fields-${key}`}>{knownFields.filter(field => key === 'info' ? field.type === 1 : field.type === 1 || field.type === 2).map(field => <option key={field.id} value={field.name} />)}</datalist>
+                    <input value={fieldNames[key]} autoComplete="off" placeholder={key === 'phone' ? '不使用时留空' : undefined} disabled={!session || busy} onChange={e => setFieldNames(previous => ({ ...previous, [key]: e.target.value }))} />
                   </label>
                 ))}
                 <details className="sidebar-optional-field"><summary>快递公司字段（可选）</summary>
@@ -1176,7 +1184,7 @@ export default function Sidebar() {
             {!ready && <p className="sidebar-help">请先完成授权码配置与表格字段匹配。</p>}
             {ready && <>
               <div className="sidebar-query-scopes">
-                <label><input type="radio" name="query-scope" checked={queryScope === 'current'} onChange={() => setQueryScope('current')} />当前选中记录 <span>{previewRows ? previewRows.filter(row => row.id === context?.recordId).length : '…'} 条</span></label>
+                <label><input type="radio" name="query-scope" checked={queryScope === 'current'} onChange={() => setQueryScope('current')} />当前选中记录（仅一行） <span>{previewRows ? previewRows.filter(row => row.id === context?.recordId).length : '…'} 条</span></label>
                 <label><input type="radio" name="query-scope" checked={queryScope === 'empty'} onChange={() => setQueryScope('empty')} />仅无结果的记录 <span>{previewRows ? previewRows.filter(row => !hasCurrentResult(row)).length : '…'} 条</span></label>
                 <label><input type="radio" name="query-scope" checked={queryScope === 'all'} onChange={() => setQueryScope('all')} />整列（当前数据表） <span>{previewRows ? previewRows.length : '…'} 条</span></label>
               </div>
@@ -1198,14 +1206,14 @@ export default function Sidebar() {
           <span>反馈与支持</span>
         </div>
         <div className="sidebar-feedback-desc">
-          如在使用中遇到问题、发现不当内容或有任何建议，欢迎加入官方交流群反馈，我们将及时响应处理。
+          如在使用中遇到问题、发现不当内容或有任何建议，欢迎反馈，我们将及时响应处理。
         </div>
-        <div className="sidebar-feedback-action">
+        {OFFICIAL_GROUP_URL && <div className="sidebar-feedback-action">
           <button type="button" className="sidebar-feedback-btn" onClick={openOfficialGroup}>
             <span>💬</span>
             <span>加入官方交流群</span>
           </button>
-        </div>
+        </div>}
       </section>
 
       </main>
@@ -1307,7 +1315,7 @@ export default function Sidebar() {
       {/* 弹窗 2：兑换码兑换（精准对齐截图 3） */}
       {couponModalOpen && (
         <div className="sidebar-modal-backdrop" role="presentation">
-          <div className="sidebar-modal" role="dialog" aria-modal="true" aria-label="兑换码兑换">
+          <div className="sidebar-modal sidebar-coupon-modal" role="dialog" aria-modal="true" aria-label="兑换码兑换">
             <div className="sidebar-modal-header">
               <h2>兑换码兑换</h2>
               <button className="sidebar-modal-close" aria-label="关闭" onClick={() => setCouponModalOpen(false)}>×</button>
@@ -1326,11 +1334,13 @@ export default function Sidebar() {
                   placeholder="请输入您的兑换码..."
                 />
               </label>
-              {couponMessage && (
-                <div className={`sidebar-coupon-msg ${couponMessage.success ? 'success' : 'error'}`}>
-                  {couponMessage.text}
-                </div>
-              )}
+              <div className="sidebar-coupon-feedback" aria-live="polite">
+                {couponBusy ? <div className="sidebar-coupon-msg pending">正在兑换，请稍候…</div> : couponMessage && (
+                  <div className={`sidebar-coupon-msg ${couponMessage.success ? 'success' : 'error'}`}>
+                    {couponMessage.text}
+                  </div>
+                )}
+              </div>
               <div className="sidebar-modal-actions">
                 <button type="button" onClick={() => setCouponModalOpen(false)}>取消</button>
                 <button type="button" className="primary" disabled={!couponCode.trim() || couponBusy} onClick={() => void handleRedeemCoupon()}>

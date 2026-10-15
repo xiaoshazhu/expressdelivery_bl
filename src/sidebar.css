@@ -231,7 +231,9 @@
 
 /* 兑换码兑换弹窗 */
 .sidebar-coupon-desc { font-size: 13px; color: #4e5969; line-height: 1.6; margin-bottom: 16px; }
-.sidebar-coupon-msg { font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-top: 10px; }
+.sidebar-coupon-feedback { min-height: 38px; margin-top: 10px; }
+.sidebar-coupon-msg { min-height: 38px; box-sizing: border-box; font-size: 12px; line-height: 20px; padding: 8px 10px; border-radius: 6px; }
+.sidebar-coupon-msg.pending { background: #f0f4ff; border: 1px solid #d3e2ff; color: #245bdb; }
 .sidebar-coupon-msg.success { background: #f6ffed; border: 1px solid #b7eb8f; color: #52c41a; }
 .sidebar-coupon-msg.error { background: #fff2f0; border: 1px solid #ffccc7; color: #ff4d4f; }
 
@@ -243,7 +245,7 @@
 .sidebar-recharge-card span { font-size: 11px; color: var(--muted); }
 .sidebar-recharge-card b { font-size: 18px; color: #f53f3f; margin: 2px 0; }
 .sidebar-recharge-card button { border: 0; background: #1677ff; border-radius: 4px; color: #fff; padding: 5px 14px; font-weight: 500; font-size: 12px; cursor: pointer; }
-.sidebar-recharge-card button:hover { background: #0958d9; }
+.sidebar-app .sidebar-recharge-card button:hover:not(:disabled) { background: #0958d9; border-color: #0958d9; color: #fff; }
 
 /* 微信支付弹窗与二维码 */
 .sidebar-payment-summary { display: grid; grid-template-columns: 75px 1fr; gap: 8px 12px; padding: 12px; border-radius: 8px; background: #f7f8fa; margin-bottom: 12px; font-size: 12px; color: var(--muted); }

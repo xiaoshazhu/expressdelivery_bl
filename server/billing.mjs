@@ -710,24 +710,20 @@ export function createBilling({ configPath = path.resolve('packages.json'), stat
         if (err.statusCode && err.statusCode < 500) {
           throw new ApiError(err.statusCode, 'COUPON_INVALID', err.message);
         }
+        throw new ApiError(503, 'COUPON_UNAVAILABLE', '兑换服务暂时不可用，请稍后重试');
       }
       if (result !== undefined) {
         const data = result?.data || result;
         const granted = data?.quota || data?.granted_quota || (typeof data === 'number' ? data : 0);
         return { ok: true, quota: granted, message: result?.message || `成功兑换 ${granted || '套餐'} 额度！`, license: await creditCoupon(k, code, Number(granted), before) };
       }
+      throw new ApiError(503, 'COUPON_UNAVAILABLE', '兑换服务暂时不可用，请稍后重试');
     }
 
     if (platform?.redeemCoupon) {
-      let result;
-      try {
-        result = await platform.redeemCoupon({ tenantKey: k, couponCode: code });
-      } catch (err) {
-        if (!(err instanceof ApiError && err.status === 503)) {
-          throw err;
-        }
-      }
+      const result = await platform.redeemCoupon({ tenantKey: k, couponCode: code });
       if (result !== undefined) return { ok: true, message: result?.message || '兑换成功', license: await creditCoupon(k, code, Number(result?.quota || result?.granted_quota || 0), before) };
+      throw new ApiError(503, 'COUPON_UNAVAILABLE', '兑换服务暂时不可用，请稍后重试');
     }
 
     await loadState();
