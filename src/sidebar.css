@@ -75,8 +75,8 @@
 .sidebar-refresh-btn:active { background: #d0e7ff; transform: scale(0.95); }
 .sidebar-refresh-btn.is-spinning svg { transform-origin: center; animation: sidebar-spin 0.65s linear infinite; }
 @keyframes sidebar-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.sidebar-billing-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 0 0 240px; align-items: center; gap: 4px; }
-.sidebar-billing-actions > button { width: 100%; height: 30px; min-width: 0; padding: 0 4px; box-sizing: border-box; justify-content: center; line-height: 1; }
+.sidebar-billing-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 0 0 228px; align-items: center; gap: 3px; }
+.sidebar-billing-actions > button { width: 100%; height: 28px; min-width: 0; padding: 0 3px; box-sizing: border-box; justify-content: center; line-height: 1; }
 .btn-auth-config { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #b8d0ff; border-radius: 4px; background: #fff; color: #245bdb; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .btn-auth-config:hover { border-color: #1677ff; color: #1677ff; }
 .btn-recharge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #91c5ff; border-radius: 4px; background: #fff; color: #1677ff; font-size: 12px; font-weight: 500; white-space: nowrap; }
@@ -88,8 +88,8 @@
   .sidebar-billing-title-group { gap: 3px; font-size: 13px; }
   .sidebar-billing-title-group > svg { width: 14px; height: 14px; }
   .sidebar-refresh-btn { width: 20px; height: 20px; }
-  .sidebar-billing-actions { flex-basis: 216px; gap: 2px; }
-  .sidebar-billing-actions > button { height: 28px; padding: 0 2px; font-size: 11px; }
+  .sidebar-billing-actions { flex-basis: 204px; gap: 2px; }
+  .sidebar-billing-actions > button { height: 26px; padding: 0 2px; font-size: 11px; }
 }
 .sidebar-billing-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0 6px; font-size: 13px; color: #4e5969; }
 .sidebar-billing-quota-text { display: flex; align-items: baseline; white-space: nowrap; }
