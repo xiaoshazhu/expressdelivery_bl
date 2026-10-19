@@ -1,0 +1,21 @@
+{
+    "schemaVersion": 4,
+    "enabled": true,
+    "items": [
+        {
+            "id": "official-group",
+            "enabled": true,
+            "text": "加入官方交流群，领享30次免费查询次数。",
+            "linkUrl": "https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=c23v2186-e36c-42c9-a6e3-1bf381411a98"
+        }
+    ],
+    "text": "加入官方交流群，领享30次免费查询次数。",
+    "linkUrl": "https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=c23v2186-e36c-42c9-a6e3-1bf381411a98",
+    "links": [
+        {
+            "text": "加入官方交流群，领享30次免费查询次数。",
+            "url": "https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=c23v2186-e36c-42c9-a6e3-1bf381411a98"
+        }
+    ],
+    "updatedAt": "2026-10-19T00:00:00.000Z"
+}

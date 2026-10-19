@@ -14,6 +14,10 @@ import { createMcpBillingClient } from './mcp-billing.mjs';
 import { qrSvgDataUrl } from './qr.mjs';
 import { createPlatformClient } from './platform.mjs';
 
+// Public invitation URL; it contains no backend credential or service token.
+const OFFICIAL_GROUP_URL = 'https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=c23v2186-e36c-42c9-a6e3-1bf381411a98';
+const OFFICIAL_GROUP_ANNOUNCEMENT = '加入官方交流群，领享30次免费查询次数。';
+
 // 自动加载 .env 环境变量文件，防止直接 node 执行时丢失配置
 try {
   const envPath = path.resolve('.env');
@@ -44,6 +48,7 @@ export function createServer(options = {}) {
   let billing;
 
   const isTest = process.env.NODE_ENV === 'test' || process.execArgv.includes('--test') || Boolean(process.env.NODE_TEST_CONTEXT);
+  const fallbackLink = process.env.FEISHU_GROUP_URL || OFFICIAL_GROUP_URL;
 
   // 初始化安汇数智官方统一接入 SDK
   const sdk = options.sdk !== undefined ? options.sdk : (isTest ? null : new AhszPluginSDK({
@@ -201,7 +206,18 @@ export function createServer(options = {}) {
             announcements = pushedAnnouncements;
           }
 
-          const resolvedGroupUrl = process.env.FEISHU_GROUP_URL || '';
+          if (!announcements.length) {
+            announcements = [{
+              id: 'official-group',
+              title: OFFICIAL_GROUP_ANNOUNCEMENT,
+              content: '',
+              level: 'info',
+              linkUrl: fallbackLink,
+              updatedAt: null,
+            }];
+          }
+
+          const resolvedGroupUrl = fallbackLink;
 
           return send(200, {
             ok: true,

@@ -10,11 +10,11 @@ type EnterpriseStatus = { registered: boolean; name: string; enterpriseType?: st
 type RechargePlan = { plan_id: string; name: string; quota?: number; days?: number; price: number; enabled: boolean; billing_type: string; description?: string };
 type PaymentOrder = { orderId: string; amount: number; qrImage?: string | null; isMock?: boolean; notice?: string };
 type Announcement = { id: string; title: string; content: string; level?: string; linkUrl?: string; updatedAt?: string | null };
+type OfficialGroupConfig = { text?: string; url?: string };
 type QueryProgress = { phase: 'loading' | 'running' | 'done'; total: number; done: number; success: number; failed: number; skipped: number; failures: { number: string; reason: string }[]; error?: string; stopped?: boolean };
 
 const API_BASE = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const apiUrl = (path: string) => `${API_BASE}${path}`;
-const OFFICIAL_GROUP_URL = String(import.meta.env.VITE_OFFICIAL_GROUP_URL || '').trim();
 
 function apiError(value: any, status: number, route: string): string {
   const detail = typeof value?.error === 'string' ? value.error : value?.error?.message || value?.message || value?.msg;
@@ -227,6 +227,7 @@ export default function Sidebar() {
   const [provider, setProvider] = useState<{ mode: 'loading' | 'mock' | 'kuaidi100' | 'aliyun_kzexpress' | 'error'; configured: boolean }>({ mode: 'loading', configured: false });
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [globalLinkUrl, setGlobalLinkUrl] = useState('');
+  const [officialGroupUrl, setOfficialGroupUrl] = useState('');
   const credential = useRef<Session | null>(null);
   const [code, setCode] = useState('');
   const authAttempt = useRef(0);
@@ -287,10 +288,6 @@ export default function Sidebar() {
     }
   };
 
-  const openOfficialGroup = () => {
-    window.open(OFFICIAL_GROUP_URL, '_blank', 'noopener,noreferrer');
-  };
-
   // 1. 服务健康检测与模式识别
   useEffect(() => {
     fetch(apiUrl('/api/health'))
@@ -315,6 +312,13 @@ export default function Sidebar() {
   };
 
   useEffect(() => {
+    fetch(apiUrl('/official-group.json'))
+      .then(r => (r.ok ? r.json() as Promise<OfficialGroupConfig> : null))
+      .then(v => {
+        const url = typeof v?.url === 'string' ? v.url.trim() : '';
+        if (url) setOfficialGroupUrl(url);
+      })
+      .catch(() => { });
     loadAnnouncements();
     const timer = window.setInterval(loadAnnouncements, 30000);
     return () => window.clearInterval(timer);
@@ -974,7 +978,8 @@ export default function Sidebar() {
     }, error => setQueryProgress(previous => ({ ...(previous || { total: 0, done: 0, success: 0, failed: 0, skipped: 0, failures: [] }), phase: 'done', error: readableQueryError(new Error(error)) })));
   }
 
-  const ready = !!session && !!mapping.number && !!mapping.info && mapping.number !== mapping.info && !busy;
+  const fieldsReady = !!session && !!mapping.number && !!mapping.info && mapping.number !== mapping.info;
+  const ready = fieldsReady && !busy;
   const previewTargets = previewRows ? targetsForScope(previewRows, queryScope, context?.recordId || null) : [];
   const requiredQuota = previewTargets.filter(row => row.number.trim() && !hasCurrentResult(row)).length;
   const quotaInsufficient = billing?.billingType === 'quota' && requiredQuota > (billing.remainingQuota ?? 0);
@@ -982,9 +987,14 @@ export default function Sidebar() {
   return (
     <div className="sidebar-app">
       <header className="sidebar-topbar">
-        <span className="sidebar-topbar-icon" aria-hidden="true">▦</span>
+        <span className="sidebar-topbar-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M3 9h18M9 9v11" />
+          </svg>
+        </span>
         <strong>运单助手</strong>
-        <button type="button" onClick={() => setHelpOpen(true)}>使用教程</button>
+        <button type="button" onClick={() => setHelpOpen(true)}>使用说明</button>
       </header>
       <main className="sidebar-content">
       {/* 1. 顶部公告栏（接收管理平台信息，悬停暂停且展示跳转提示） */}
@@ -1169,20 +1179,12 @@ export default function Sidebar() {
                 <p className="sidebar-help">可从现有字段中选择，也可输入新名称。手机号字段留空即可跳过；初始化会复用已有字段并创建缺少的字段，“跳过”仅匹配已有字段。</p>
               </div> : <p className="sidebar-field-summary">已按【{(['number', 'phone', 'info'] as FieldNameKey[]).filter(key => Boolean(mapping[key])).map(key => fieldNames[key]).join(' / ') || '尚未匹配字段'}】建立字段，点击展开可修改字段名称或重新初始化。</p>}
             </div>
-            {session && <button type="button" className="sidebar-disconnect" disabled={busy} onClick={() => act(async () => {
-              await post('disconnect', {}, session.token);
-              credential.current = null;
-              setSession(null);
-              if (context) try { window.localStorage.removeItem(authCodeKey(currentTenant(), context.baseId)); } catch { /* Storage may be unavailable. */ }
-              setMessage('已清除当前表格授权连接。');
-            })}>断开并清除授权</button>}
           </section>
 
-          <section className="sidebar-panel sidebar-query-card">
+          {fieldsReady && <section className="sidebar-panel sidebar-query-card">
             <h2>批量查询</h2>
             <p className="sidebar-help">选择查询范围后点击开始查询，结果会写回当前表格。</p>
-            {!ready && <p className="sidebar-help">请先完成授权码配置与表格字段匹配。</p>}
-            {ready && <>
+            <>
               <div className="sidebar-query-scopes">
                 <label><input type="radio" name="query-scope" checked={queryScope === 'current'} onChange={() => setQueryScope('current')} />当前选中记录（仅一行） <span>{previewRows ? previewRows.filter(row => row.id === context?.recordId).length : '…'} 条</span></label>
                 <label><input type="radio" name="query-scope" checked={queryScope === 'empty'} onChange={() => setQueryScope('empty')} />仅无结果的记录 <span>{previewRows ? previewRows.filter(row => !hasCurrentResult(row)).length : '…'} 条</span></label>
@@ -1194,8 +1196,9 @@ export default function Sidebar() {
               {quotaInsufficient && <p className="sidebar-quota-warning">当前额度 {billing?.remainingQuota ?? 0} 次，本次需要 {requiredQuota} 次，请先领取体验额度或充值。</p>}
               <button type="button" className="primary sidebar-run-query" disabled={!ready || !previewRows || requiredQuota === 0 || quotaInsufficient || (queryScope === 'current' && !context?.recordId)} onClick={() => void query(queryScope)}>开始查询 {requiredQuota} 条</button>
               {previewRows && previewTargets.length > 0 && requiredQuota === 0 && <p className="sidebar-help">所选记录已有结果或没有单号，无需重复查询。</p>}
-            </>}
+            </>
           </section>
+          }
         </>
       )}
 
@@ -1208,12 +1211,12 @@ export default function Sidebar() {
         <div className="sidebar-feedback-desc">
           如在使用中遇到问题、发现不当内容或有任何建议，欢迎反馈，我们将及时响应处理。
         </div>
-        {OFFICIAL_GROUP_URL && <div className="sidebar-feedback-action">
-          <button type="button" className="sidebar-feedback-btn" onClick={openOfficialGroup}>
+        <div className="sidebar-feedback-action">
+          <a className="sidebar-feedback-btn" href={officialGroupUrl || '#'} target="_blank" rel="noopener noreferrer" onClick={e => { if (!officialGroupUrl) e.preventDefault(); }}>
             <span>💬</span>
             <span>加入官方交流群</span>
-          </button>
-        </div>}
+          </a>
+        </div>
       </section>
 
       </main>
@@ -1300,15 +1303,15 @@ export default function Sidebar() {
       )}
 
       {helpOpen && <div className="sidebar-modal-backdrop" role="presentation">
-        <div className="sidebar-modal sidebar-help-modal" role="dialog" aria-modal="true" aria-label="使用教程">
-          <div className="sidebar-modal-header"><h2>使用教程</h2><button className="sidebar-modal-close" aria-label="关闭" onClick={() => setHelpOpen(false)}>×</button></div>
+        <div className="sidebar-modal sidebar-help-modal" role="dialog" aria-modal="true" aria-label="使用说明">
+          <div className="sidebar-modal-header"><h2>使用说明</h2><button className="sidebar-modal-close" aria-label="关闭" onClick={() => setHelpOpen(false)}>×</button></div>
           <div className="sidebar-modal-body">
-            <a className="sidebar-help-gif-link" href={`${import.meta.env.BASE_URL}guide/sidebar-workflow.gif`} target="_blank" rel="noopener noreferrer" aria-label="查看原尺寸使用教程动图">
+            <a className="sidebar-help-gif-link" href={`${import.meta.env.BASE_URL}guide/sidebar-workflow.gif`} target="_blank" rel="noopener noreferrer" aria-label="查看原尺寸使用说明动图">
               <img className="sidebar-help-gif" src={`${import.meta.env.BASE_URL}guide/sidebar-workflow.gif`} alt="运单助手使用流程动图" />
             </a>
             <p className="sidebar-help-gif-hint">点击动图可查看原尺寸。</p>
           </div>
-          <div className="sidebar-modal-actions"><button type="button" onClick={() => setHelpOpen(false)}>关闭</button></div>
+          <div className="sidebar-modal-actions"><button type="button" className="primary" onClick={() => setHelpOpen(false)}>知道了</button></div>
         </div>
       </div>}
 
