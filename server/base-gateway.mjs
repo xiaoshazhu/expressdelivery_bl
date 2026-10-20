@@ -2,7 +2,7 @@ import { BaseClient } from '@lark-base-open/node-sdk';
 import { ApiError, formatResultText } from './service.mjs';
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {}, trace() {} };
-const outputFields = { summary: ['物流摘要', 1], trackingNumber: ['快递单号', 1], carrierName: ['快递公司', 1], carrierCode: ['快递公司编码', 1], status: ['物流状态', 1], latest: ['最新轨迹', 1], queriedAt: ['查询时间', 5], trace: ['完整轨迹', 1] };
+const outputFields = { summary: ['物流摘要', 1], trackingNumber: ['快递单号', 1], carrierName: ['快递公司', 1], carrierCode: ['快递公司编码', 1], status: ['物流状态', 1], latest: ['最新轨迹', 1], queriedAt: ['查询时间', 5], trace: ['完整轨迹', 1], syncLog: ['同步日志', 1] };
 function unwrap(response) {
   if (response.code !== 0) {
     const detail = typeof response.msg === 'string' ? response.msg.trim() : '';
@@ -37,11 +37,17 @@ export class BaseGateway {
     const info = fields.find(f => f.id === mapping?.info && f.type === 1);
     if (!number || !info || number.id === info.id) throw new ApiError(400, 'FIELD_MAPPING', '请选择两个不同的文本字段');
     const optional = {};
-    for (const key of ['phone', 'carrier', 'trigger']) {
+    for (const key of ['phone', 'carrier']) {
       if (!mapping?.[key]) continue;
       const field = fields.find(f => f.id === mapping[key] && [1, 2].includes(f.type));
-      if (!field) throw new ApiError(400, 'FIELD_MAPPING', `所选${key === 'phone' ? '核验手机号' : key === 'carrier' ? '快递公司' : '刷新触发'}字段必须是文本或数字字段`);
+      if (!field) throw new ApiError(400, 'FIELD_MAPPING', `所选${key === 'phone' ? '核验手机号' : '快递公司'}字段必须是文本或数字字段`);
       optional[key] = field.name;
+    }
+    if (mapping?.trigger) {
+      const triggerIds = Array.isArray(mapping.trigger) ? mapping.trigger : [mapping.trigger];
+      const triggerFields = triggerIds.map(id => fields.find(f => f.id === id && [1, 2].includes(f.type))).filter(Boolean);
+      if (triggerFields.length !== triggerIds.length) throw new ApiError(400, 'FIELD_MAPPING', '所选刷新触发字段必须是文本或数字字段');
+      optional.trigger = triggerFields.map(field => field.name);
     }
     const outputs = {};
     for (const [key, id] of Object.entries(mapping?.outputs || {})) {
@@ -78,14 +84,29 @@ export class BaseGateway {
       else {
         const data = unwrap(await this.client.base.appTableField.create({ path: { table_id: this.tableId }, data: { field_name: name, type: 1 } }));
         mapping[key] = data.field.field_id;
+        fields.push({ id: data.field.field_id, name, type: 1 });
       }
     }
-    for (const key of ['carrier', 'trigger']) {
-      const id = options.optionalMapping?.[key];
-      if (!id) continue;
-      if (!fields.some(field => field.id === id && [1, 2].includes(field.type))) throw new ApiError(400, 'FIELD_MAPPING', '可选输入字段已变化，请重新选择');
-      mapping[key] = id;
+    const carrierId = options.optionalMapping?.carrier;
+    if (carrierId) {
+      if (!fields.some(field => field.id === carrierId && [1, 2].includes(field.type))) throw new ApiError(400, 'FIELD_MAPPING', '可选输入字段已变化，请重新选择');
+      mapping.carrier = carrierId;
     }
+    const triggerIds = Array.isArray(options.optionalMapping?.trigger)
+      ? options.optionalMapping.trigger
+      : options.optionalMapping?.trigger ? [options.optionalMapping.trigger] : [];
+    const triggerNames = Array.isArray(options.optionalMapping?.triggerNames)
+      ? options.optionalMapping.triggerNames.map(value => String(value).trim()).filter(Boolean) : [];
+    const resolvedTriggerIds = [];
+    for (const id of triggerIds) {
+      if (!fields.some(field => field.id === id && [1, 2].includes(field.type))) throw new ApiError(400, 'FIELD_MAPPING', '可选输入字段已变化，请重新选择');
+      if (!resolvedTriggerIds.includes(id)) resolvedTriggerIds.push(id);
+    }
+    for (const name of triggerNames) {
+      const field = fields.find(candidate => candidate.name === name && [1, 2].includes(candidate.type));
+      if (field && !resolvedTriggerIds.includes(field.id)) resolvedTriggerIds.push(field.id);
+    }
+    if (resolvedTriggerIds.length) mapping.trigger = resolvedTriggerIds;
     for (const key of options.enabledOutputs || []) {
       const definition = outputFields[key];
       if (!definition) continue;
@@ -131,6 +152,12 @@ export class BaseGateway {
     try {
       result = await service.query({ number, carrier, phone, tenantKey: this.tenantKey, recordId: body.recordId, idempotencyKey });
     } catch (error) {
+      try {
+        if (names.outputs?.syncLog) {
+          const log = error instanceof Error ? error.message : '查询失败';
+          unwrap(await this.client.base.appTableRecord.update({ path, data: { fields: { [names.outputs.syncLog]: `同步失败：${log}` } } }));
+        }
+      } catch (_) { /* 同步日志失败不覆盖原始查询错误。 */ }
       if (error instanceof ApiError && ['INVALID_PHONE', 'PHONE_REQUIRED', 'PHONE_INVALID'].includes(error.code) && oldInfo) {
         const current = unwrap(await this.client.base.appTableRecord.get({ path })).record;
         if (plain(current.fields[names.number]).trim() === number && plain(current.fields[names.info]) === oldInfo &&
@@ -147,9 +174,10 @@ export class BaseGateway {
     const fields = { [names.info]: resultText };
     const latest = result.events?.[0]?.content || result.summary || '';
     const trace = (result.events || []).map(item => `${item.time || ''} ${item.content || ''}${item.location ? `（${item.location}）` : ''}`.trim()).join('\n');
-    const values = { summary: result.summary || '', carrierName: result.carrier || '', carrierCode: result.carrierCode || '', status: result.state || '', latest, queriedAt: Date.parse(result.queriedAt), trace };
+    const values = { summary: result.summary || '', carrierName: result.carrier || '', carrierCode: result.carrierCode || '', status: result.state || '', latest, queriedAt: Date.parse(result.queriedAt), trace, syncLog: `同步成功：${result.queriedAt || new Date().toISOString()}` };
+    const reservedFields = [names.info, names.number, names.phone, names.carrier, ...(Array.isArray(names.trigger) ? names.trigger : names.trigger ? [names.trigger] : [])];
     for (const [key, fieldName] of Object.entries(names.outputs || {})) {
-      if (key === 'trackingNumber' || [names.info, names.number, names.phone, names.carrier, names.trigger].includes(fieldName)) continue;
+      if (key === 'trackingNumber' || reservedFields.includes(fieldName)) continue;
       if (key === 'queriedAt' && !Number.isFinite(values.queriedAt)) continue;
       fields[fieldName] = values[key] ?? '';
     }

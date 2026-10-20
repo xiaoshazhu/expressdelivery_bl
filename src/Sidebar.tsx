@@ -10,7 +10,6 @@ type EnterpriseStatus = { registered: boolean; name: string; enterpriseType?: st
 type RechargePlan = { plan_id: string; name: string; quota?: number; days?: number; price: number; enabled: boolean; billing_type: string; description?: string };
 type PaymentOrder = { orderId: string; amount: number; qrImage?: string | null; isMock?: boolean; notice?: string };
 type Announcement = { id: string; title: string; content: string; level?: string; linkUrl?: string; updatedAt?: string | null };
-type OfficialGroupConfig = { text?: string; url?: string };
 type QueryProgress = { phase: 'loading' | 'running' | 'done'; total: number; done: number; success: number; failed: number; skipped: number; failures: { number: string; reason: string }[]; error?: string; stopped?: boolean };
 
 const API_BASE = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
@@ -51,6 +50,16 @@ function readableQueryError(error: unknown): string {
   if (code?.startsWith('PROVIDER_')) return '快递查询服务暂时不可用，请稍后重试。';
   if (code === 'FEISHU_ERROR' || code === 'PAGINATION') return '读取飞书表格失败，请检查授权和表格权限后重试。';
   return message.replace(/（[A-Z][A-Z0-9_]+）/g, '').replace(/（HTTP\s*\d+[^）]*）/gi, '').trim() || '查询失败，请稍后重试。';
+}
+
+function readableAuthError(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  const code = message.match(/[（(]([A-Z][A-Z0-9_]+)[）)]/)?.[1];
+  if (code === 'BASE_CONFIG') return '当前表格信息或授权码不完整，请检查后重试。';
+  if (code === 'FEISHU_ERROR' || code === 'AUTH_INVALID') return '授权码无效或已过期，请重新获取后重试。';
+  if (/1011|personal\s+token|授权码|token\s+invalid|invalid\s+token|鉴权|认证|权限/.test(message)) return '授权码无效或已过期，请重新获取后重试。';
+  if (/超时|无法连接|服务器返回异常|HTTP\s*5\d\d/.test(message)) return '暂时无法连接服务，请稍后重试。';
+  return '授权验证失败，请检查授权码后重试。';
 }
 
 function hasCurrentResult(row: Row): boolean {
@@ -126,7 +135,7 @@ function savedBatchConfig(baseId: string, tableId: string): Record<string, any> 
 }
 type FieldNameKey = 'number' | 'phone' | 'info';
 const DEFAULT_FIELD_NAMES: Record<FieldNameKey, string> = {
-  number: '快递单号', phone: '', info: '快递信息',
+  number: '快递单号', phone: '核验手机号', info: '快递信息',
 };
 const FIELD_ALIASES: Record<FieldNameKey, string[]> = {
   number: ['快递单号', '运单号'], phone: ['核验手机号', '手机号码', '手机号'],
@@ -141,14 +150,68 @@ const OUTPUT_FIELDS: { key: OutputKey; label: string; type: number }[] = [
   { key: 'latest', label: '最新轨迹', type: 1 },
   { key: 'queriedAt', label: '查询时间', type: 5 },
   { key: 'trace', label: '完整轨迹', type: 1 },
+  { key: 'syncLog', label: '同步日志', type: 1 },
 ];
 function matchField(fields: Field[], key: FieldNameKey): Field | undefined {
   return FIELD_ALIASES[key].map(name => fields.find(field => field.name === name && (key === 'info' ? field.type === 1 : field.type === 1 || field.type === 2))).find(Boolean);
+}
+function fieldAcceptsValue(key: FieldNameKey, field: Field): boolean {
+  return key === 'info' ? field.type === 1 : [1, 2].includes(field.type);
+}
+function selectableFields(fields: Field[], key: FieldNameKey): Field[] {
+  return fields.filter(field => fieldAcceptsValue(key, field));
+}
+function resolveFieldName(fields: Field[], key: FieldNameKey, preferred?: unknown): string {
+  const candidate = typeof preferred === 'string' ? preferred.trim() : '';
+  if (candidate && fields.some(field => field.name === candidate && fieldAcceptsValue(key, field))) return candidate;
+  return matchField(fields, key)?.name || DEFAULT_FIELD_NAMES[key];
+}
+function fallbackTriggerNames(fields: Field[], preferred?: Partial<Record<FieldNameKey, unknown>>): string[] {
+  return Array.from(new Set([
+    resolveFieldName(fields, 'number', preferred?.number),
+    resolveFieldName(fields, 'phone', preferred?.phone),
+  ].filter(Boolean)));
+}
+function resolvedTriggerNames(fields: Field[], saved: Record<string, any>, preferred?: Partial<Record<FieldNameKey, unknown>>): string[] {
+  const configured = Array.isArray(saved.triggerInput)
+    ? saved.triggerInput
+    : typeof saved.triggerInput === 'string' && saved.triggerInput
+      ? [saved.triggerInput]
+      : [];
+  const matched = configured
+    .map(value => String(value).trim())
+    .filter(name => fields.some(field => field.name === name && [1, 2].includes(field.type)));
+  return matched.length > 0 ? Array.from(new Set(matched)) : fallbackTriggerNames(fields, preferred);
+}
+type FieldPickerProps = {
+  fields: Field[];
+  fieldKey: FieldNameKey;
+  label: string;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+};
+function FieldPicker({ fields, fieldKey, label, value, disabled, onChange }: FieldPickerProps) {
+  const options = selectableFields(fields, fieldKey);
+  const fallback = DEFAULT_FIELD_NAMES[fieldKey];
+  // Put names that already exist in the current table first. The default remains
+  // available at the end so initialization can create it when needed.
+  const names = Array.from(new Set([...options.map(field => field.name), fallback].filter(Boolean)));
+  return <select
+    className="sidebar-field-select"
+    value={value || fallback}
+    disabled={disabled}
+    aria-label={`选择${label}`}
+    onChange={event => onChange(event.target.value)}
+  >
+    {names.map(name => <option key={name} value={name}>{name}</option>)}
+  </select>;
 }
 function mappingFromFields(fields: Field[]): Mapping {
   return {
     number: matchField(fields, 'number')?.id || '', info: matchField(fields, 'info')?.id || '',
     phone: matchField(fields, 'phone')?.id || '',
+    trigger: [matchField(fields, 'number')?.id, matchField(fields, 'phone')?.id].filter(Boolean) as string[],
     outputs: Object.fromEntries(OUTPUT_FIELDS.map(({ key, label, type }) => [key, fields.find(field => field.name === label && (key === 'trackingNumber' ? [1, 2].includes(field.type) : field.type === type))?.id || ''])) as Mapping['outputs'],
   };
 }
@@ -156,11 +219,13 @@ function configuredMapping(fields: Field[], saved: Record<string, any>): Mapping
   const mapping = mappingFromFields(fields);
   for (const key of ['number', 'phone', 'info'] as FieldNameKey[]) {
     const name = saved.fieldNames?.[key];
-    if (typeof name !== 'string') continue;
-    mapping[key] = fields.find(field => field.name === name && (key === 'info' ? field.type === 1 : [1, 2].includes(field.type)))?.id || '';
+    if (typeof name !== 'string' || !name.trim()) continue;
+    const found = fields.find(field => field.name === name && (key === 'info' ? field.type === 1 : [1, 2].includes(field.type)))?.id;
+    if (found) mapping[key] = found;
   }
-  mapping.carrier = fields.find(field => field.name === saved.carrierInput && [1, 2].includes(field.type))?.id || '';
-  mapping.trigger = fields.find(field => field.name === saved.triggerInput && [1, 2].includes(field.type))?.id || '';
+  mapping.trigger = resolvedTriggerNames(fields, saved, saved.fieldNames)
+    .map(name => fields.find(field => field.name === name && [1, 2].includes(field.type))?.id)
+    .filter(Boolean) as string[];
   mapping.outputs = saved.moreInfo === false ? {} : Object.fromEntries(Object.entries(mapping.outputs || {}).filter(([key]) => saved.outputEnabled?.[key] !== false)) as Mapping['outputs'];
   return mapping;
 }
@@ -213,12 +278,6 @@ export default function Sidebar() {
   const [paymentPaid, setPaymentPaid] = useState(false);
   const [pendingPurchase, setPendingPurchase] = useState<RechargePlan | null>(null);
 
-  const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
-  const [feedbackContent, setFeedbackContent] = useState('');
-  const [feedbackContact, setFeedbackContact] = useState('');
-  const [feedbackBusy, setFeedbackBusy] = useState(false);
-  const [feedbackSuccess, setFeedbackSuccess] = useState(false);
-
   const [refundModalOpen, setRefundModalOpen] = useState(false);
   const [refundOrderId, setRefundOrderId] = useState('');
   const [refundBusy, setRefundBusy] = useState(false);
@@ -227,7 +286,6 @@ export default function Sidebar() {
   const [provider, setProvider] = useState<{ mode: 'loading' | 'mock' | 'kuaidi100' | 'aliyun_kzexpress' | 'error'; configured: boolean }>({ mode: 'loading', configured: false });
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [globalLinkUrl, setGlobalLinkUrl] = useState('');
-  const [officialGroupUrl, setOfficialGroupUrl] = useState('');
   const credential = useRef<Session | null>(null);
   const [code, setCode] = useState('');
   const authAttempt = useRef(0);
@@ -251,15 +309,15 @@ export default function Sidebar() {
   const [outputEnabled, setOutputEnabled] = useState<Record<OutputKey, boolean>>(Object.fromEntries(OUTPUT_FIELDS.map(field => [field.key, true])) as Record<OutputKey, boolean>);
   const [moreInfo, setMoreInfo] = useState(true);
   const [autoUpdate, setAutoUpdate] = useState(true);
-  const [carrierInput, setCarrierInput] = useState('');
-  const [triggerInput, setTriggerInput] = useState('');
+  const [triggerInput, setTriggerInput] = useState<string[]>([DEFAULT_FIELD_NAMES.number, DEFAULT_FIELD_NAMES.phone]);
+  const [triggerPickerOpen, setTriggerPickerOpen] = useState(false);
   const loadedConfigKey = useRef('');
   useEffect(() => {
     if (!context) return;
     const key = batchConfigKey(context.baseId, context.tableId);
     if (loadedConfigKey.current !== key) return;
-    try { window.localStorage.setItem(key, JSON.stringify({ fieldNames, outputEnabled, moreInfo, autoUpdate, carrierInput, triggerInput })); } catch { /* Storage may be unavailable. */ }
-  }, [context?.baseId, context?.tableId, fieldNames, outputEnabled, moreInfo, autoUpdate, carrierInput, triggerInput]);
+    try { window.localStorage.setItem(key, JSON.stringify({ fieldNames, outputEnabled, moreInfo, autoUpdate, triggerInput })); } catch { /* Storage may be unavailable. */ }
+  }, [context?.baseId, context?.tableId, fieldNames, outputEnabled, moreInfo, autoUpdate, triggerInput]);
   const [fieldsOpen, setFieldsOpen] = useState(true);
   const [initialized, setInitialized] = useState(false);
   const [queryScope, setQueryScope] = useState<'current' | 'empty' | 'all'>('current');
@@ -267,12 +325,29 @@ export default function Sidebar() {
   const [previewError, setPreviewError] = useState('');
   const [previewNonce, setPreviewNonce] = useState(0);
   const [trialPanelOpen, setTrialPanelOpen] = useState(true);
-  const [carrier, setCarrier] = useState('自动识别');
+  const carrier = '自动识别';
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const lock = useRef(false);
   const cancelled = useRef(false);
-  const [, setMessage] = useState('');
+  const [message, setMessage] = useState('');
+  const [skipFeedback, setSkipFeedback] = useState('');
+  const transientMessageTimer = useRef<number | null>(null);
+  const showTransientMessage = (text: string, seconds = 10) => {
+    if (transientMessageTimer.current !== null) window.clearInterval(transientMessageTimer.current);
+    let remaining = seconds;
+    setMessage(`${text}，提示将在 ${remaining} 秒后自动隐藏。`);
+    transientMessageTimer.current = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        if (transientMessageTimer.current !== null) window.clearInterval(transientMessageTimer.current);
+        transientMessageTimer.current = null;
+        setMessage(current => current.startsWith(text) ? '' : current);
+        return;
+      }
+      setMessage(current => current.startsWith(text) ? `${text}，提示将在 ${remaining} 秒后自动隐藏。` : current);
+    }, 1000);
+  };
   const [queryProgress, setQueryProgress] = useState<QueryProgress | null>(null);
   const revision = useRef(0);
   const recognize = useRef<() => Promise<void>>(async () => { });
@@ -296,7 +371,7 @@ export default function Sidebar() {
       .catch(() => setProvider({ mode: 'error', configured: false }));
   }, []);
 
-  // 2. 接收插件管理平台与 SDK 的公告及交流群地址
+  // 2. 接收插件管理平台与 SDK 的公告
   const loadAnnouncements = () => {
     fetch(apiUrl('/api/announcement'))
       .then(r => (r.ok ? r.json() : null))
@@ -312,13 +387,6 @@ export default function Sidebar() {
   };
 
   useEffect(() => {
-    fetch(apiUrl('/official-group.json'))
-      .then(r => (r.ok ? r.json() as Promise<OfficialGroupConfig> : null))
-      .then(v => {
-        const url = typeof v?.url === 'string' ? v.url.trim() : '';
-        if (url) setOfficialGroupUrl(url);
-      })
-      .catch(() => { });
     loadAnnouncements();
     const timer = window.setInterval(loadAnnouncements, 30000);
     return () => window.clearInterval(timer);
@@ -387,11 +455,12 @@ export default function Sidebar() {
         setMapping({ number: '', info: '' });
         setKnownFields([]);
         setFieldNames(DEFAULT_FIELD_NAMES);
-        setCarrierInput('');
-        setTriggerInput('');
+        setTriggerInput([DEFAULT_FIELD_NAMES.number, DEFAULT_FIELD_NAMES.phone]);
+        setTriggerPickerOpen(false);
         setInitialized(false);
         setPreviewRows(null);
         setQueryProgress(null);
+        setSkipFeedback('');
         if (!selection.baseId || !selection.tableId) {
           setMessage('请先在飞书左侧选择一个数据表。');
           return;
@@ -404,18 +473,20 @@ export default function Sidebar() {
         setFieldNames({ ...DEFAULT_FIELD_NAMES, ...(saved.fieldNames || {}) });
         setMoreInfo(saved.moreInfo !== false);
         setAutoUpdate(saved.autoUpdate !== false);
-        setOutputEnabled({ ...Object.fromEntries(OUTPUT_FIELDS.map(field => [field.key, true])), ...(saved.outputEnabled || {}) } as Record<OutputKey, boolean>);
-        setCarrierInput(typeof saved.carrierInput === 'string' ? saved.carrierInput : '');
-        setTriggerInput(typeof saved.triggerInput === 'string' ? saved.triggerInput : '');
+        setOutputEnabled({ ...Object.fromEntries(OUTPUT_FIELDS.map(field => [field.key, true])), ...(saved.outputEnabled || {}), syncLog: true } as Record<OutputKey, boolean>);
+        setTriggerInput(resolvedTriggerNames([], saved, saved.fieldNames));
         active.current = next;
         setContext(next);
         void table.getFieldMetaList().then(items => {
           if (disposed || request !== sequence || credential.current) return;
           const existingFields: Field[] = items.map(field => ({ id: field.id, name: field.name, type: Number(field.type) }));
           setKnownFields(existingFields);
-          setMapping(configuredMapping(existingFields, saved));
-          setFieldNames(Object.fromEntries((Object.keys(DEFAULT_FIELD_NAMES) as FieldNameKey[])
-            .map(key => [key, saved.fieldNames?.[key] ?? matchField(existingFields, key)?.name ?? DEFAULT_FIELD_NAMES[key]])) as Record<FieldNameKey, string>);
+          const initialMapping = configuredMapping(existingFields, saved);
+          setMapping(initialMapping);
+          const resolvedNames = Object.fromEntries((Object.keys(DEFAULT_FIELD_NAMES) as FieldNameKey[])
+            .map(key => [key, resolveFieldName(existingFields, key, saved.fieldNames?.[key])])) as Record<FieldNameKey, string>;
+          setFieldNames(resolvedNames);
+          setTriggerInput(resolvedTriggerNames(existingFields, saved, resolvedNames));
           loadedConfigKey.current = batchConfigKey(next.baseId, next.tableId);
         }).catch(() => { /* 授权前无法读取字段时，连接成功后由服务端同步。 */ });
         // 重要：切勿将 tenantKey 设为 selection.baseId（baseId 是数据表 AppToken，非企业组织 TenantKey）
@@ -491,12 +562,12 @@ export default function Sidebar() {
 
   // 每个企业与多维表格只录入一次授权码，切换表格时自动重建短期会话。
   useEffect(() => {
-    if (!embedded || !context || !tenantKey || session || busy) return;
+    if (!embedded || !context || session || busy) return;
     let saved = '';
-    try { saved = window.localStorage.getItem(authCodeKey(tenantKey, context.baseId)) || ''; } catch { /* Storage may be unavailable. */ }
+    try { saved = window.localStorage.getItem(authCodeKey(currentTenant(), context.baseId)) || ''; } catch { /* Storage may be unavailable. */ }
     if (saved) void connect(saved);
     else setAuthModalOpen(true);
-  }, [embedded, context?.baseId, context?.tableId, tenantKey, session?.token]);
+  }, [embedded, context?.baseId, context?.tableId, tenantKey, session?.token, busy]);
 
   // 8. 轮询订单支付状态
   useEffect(() => {
@@ -589,13 +660,17 @@ export default function Sidebar() {
       try { window.localStorage.setItem(authCodeKey(currentTenant(), current.baseId), targetCode); } catch { /* Storage may be unavailable. */ }
       closeAuth();
       const saved = savedBatchConfig(current.baseId, current.tableId);
-      setMapping(configuredMapping(result.fields, saved));
+      const initialMapping = configuredMapping(result.fields, saved);
+      setMapping(initialMapping);
       setInitialized(false);
-      setFieldNames(Object.fromEntries((Object.keys(DEFAULT_FIELD_NAMES) as FieldNameKey[])
-        .map(key => [key, saved.fieldNames?.[key] ?? matchField(result.fields, key)?.name ?? DEFAULT_FIELD_NAMES[key]])) as Record<FieldNameKey, string>);
+      const resolvedNames = Object.fromEntries((Object.keys(DEFAULT_FIELD_NAMES) as FieldNameKey[])
+        .map(key => [key, resolveFieldName(result.fields, key, saved.fieldNames?.[key])])) as Record<FieldNameKey, string>;
+      setFieldNames(resolvedNames);
+      setTriggerInput(resolvedTriggerNames(result.fields, saved, resolvedNames));
+      setTriggerPickerOpen(false);
       loadedConfigKey.current = batchConfigKey(current.baseId, current.tableId);
       setFieldsOpen(true);
-      setMessage('已完成授权配置并连接数据表！');
+      showTransientMessage('已完成授权配置并连接数据表');
       if (offerEligible && !hasSeenTrialOffer(currentTenant())) {
         markTrialOfferSeen(currentTenant());
         setTrialOfferOpen(true);
@@ -603,13 +678,12 @@ export default function Sidebar() {
       void refreshBilling();
     } catch (error) {
       if (attempt !== authAttempt.current) return;
-      const detail = error instanceof Error ? error.message : '授权码验证失败';
+      const detail = readableAuthError(error);
       if (tokenValue !== undefined && tokenValue !== code) {
         try { window.localStorage.removeItem(authCodeKey(currentTenant(), active.current?.baseId || '')); } catch { /* Storage may be unavailable. */ }
       }
       setAuthError(detail);
       setAuthModalOpen(true);
-      setMessage(`授权连接失败：${detail}`);
     } finally {
       if (authRequest.current === request) authRequest.current = null;
       lock.current = false;
@@ -812,41 +886,18 @@ export default function Sidebar() {
     }
   }
 
-  // 提交官方交流群反馈
-  async function submitFeedback() {
-    if (!feedbackContent.trim()) {
-      setMessage('请输入反馈内容');
-      return;
-    }
-    setFeedbackBusy(true);
-    try {
-      await post('feedback', {
-        tenantKey: currentTenant(),
-        content: feedbackContent.trim(),
-        contact: feedbackContact.trim(),
-      });
-      setFeedbackSuccess(true);
-      setTimeout(() => {
-        setFeedbackModalOpen(false);
-        setFeedbackContent('');
-        setFeedbackContact('');
-        setFeedbackSuccess(false);
-      }, 1800);
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : '提交反馈失败');
-    } finally {
-      setFeedbackBusy(false);
-    }
-  }
-
   // 初始化表格列
   async function initialize() {
     await act(async version => {
       if (!session) return;
+      setSkipFeedback('');
       const fieldId = (name: string) => knownFields.find(field => field.name === name && [1, 2].includes(field.type))?.id || '';
       const result = await post<{ mapping: Mapping; fields: Field[] }>('base/initialize', {
         fieldNames,
-        optionalMapping: { carrier: fieldId(carrierInput), trigger: fieldId(triggerInput) },
+        optionalMapping: {
+          trigger: triggerInput.map(name => fieldId(name)).filter(Boolean),
+          triggerNames: triggerInput,
+        },
         enabledOutputs: moreInfo ? OUTPUT_FIELDS.filter(field => outputEnabled[field.key]).map(field => field.key) : [],
       }, session.token);
       if (version !== revision.current) return;
@@ -858,21 +909,37 @@ export default function Sidebar() {
       const next = { ...session, fields: result.fields };
       credential.current = next;
       setSession(next);
-      setMessage('表格结构已初始化：已有字段直接复用，缺少的字段已创建。');
+          showTransientMessage('表格结构已初始化：已有字段直接复用，缺少的字段已创建。');
     });
   }
 
   function skipInitialize() {
-    const fields = session?.fields || knownFields;
-    const findField = (key: FieldNameKey) => fields.find(field => field.name === fieldNames[key].trim() && (key === 'info' ? field.type === 1 : field.type === 1 || field.type === 2))?.id || '';
+    if (!session) {
+      const notice = '请先完成授权码配置后再使用“跳过”；该操作只匹配当前表格中已有字段。';
+      setSkipFeedback(notice);
+      setMessage(notice);
+      return;
+    }
+    setSkipFeedback('');
+    const fields = session.fields.length > 0 ? session.fields : knownFields;
+    const findField = (key: FieldNameKey) => fields.find(field => field.name === fieldNames[key].trim() && fieldAcceptsValue(key, field))?.id || '';
     const next: Mapping = { number: findField('number'), phone: findField('phone'), info: findField('info') };
-    next.carrier = fields.find(field => field.name === carrierInput && [1, 2].includes(field.type))?.id || '';
-    next.trigger = fields.find(field => field.name === triggerInput && [1, 2].includes(field.type))?.id || '';
-    next.outputs = moreInfo ? Object.fromEntries(OUTPUT_FIELDS.filter(field => outputEnabled[field.key]).map(field => [field.key, fields.find(candidate => candidate.name === field.label && (field.key === 'trackingNumber' ? [1, 2].includes(candidate.type) : candidate.type === field.type))?.id || '']).filter(([, id]) => id)) as Mapping['outputs'] : {};
+    next.trigger = triggerInput.map(name => fields.find(field => field.name === name.trim() && [1, 2].includes(field.type))?.id).filter(Boolean) as string[];
+    next.outputs = Object.fromEntries(OUTPUT_FIELDS.filter(field => field.key === 'syncLog' || (moreInfo && outputEnabled[field.key])).map(field => [field.key, fields.find(candidate => candidate.name === field.label && (field.key === 'trackingNumber' ? [1, 2].includes(candidate.type) : candidate.type === field.type))?.id || '']).filter(([, id]) => id)) as Mapping['outputs'];
     setMapping(next);
-    setFieldsOpen(false);
     setInitialized(false);
-    setMessage(next.number && next.info ? '已匹配现有字段，可以开始查询。' : '未找到单号或信息文本字段，请展开字段配置并初始化表格。');
+    if (!next.number || !next.info || next.number === next.info) {
+      setFieldsOpen(true);
+      const missing = [!next.number ? '快递单号' : '', !next.info ? '快递信息' : ''].filter(Boolean).join('、');
+      const notice = `已检查当前表格，暂未找到${missing || '完整字段'}；请在下拉框中选择已有字段，或使用“初始化表格结构”补充。`;
+      setSkipFeedback(notice);
+      setMessage(notice);
+      return;
+    }
+    setFieldsOpen(false);
+    const notice = '已匹配当前表格中的已有字段，可以开始查询。';
+    setSkipFeedback(notice);
+    setMessage(notice);
   }
 
   // 执行查询
@@ -927,7 +994,8 @@ export default function Sidebar() {
       off.push(table.onRecordModify(event => {
         schedule();
         const { recordId, fieldIds } = event.data || {};
-        if (recordId && fieldIds?.some(id => [mapping.number, mapping.phone, mapping.carrier, mapping.trigger].includes(id))) autoQuery(recordId, true);
+        const triggerIds = mapping.trigger || [];
+        if (recordId && fieldIds?.some(id => [mapping.number, mapping.phone, mapping.carrier, ...triggerIds].includes(id))) autoQuery(recordId, true);
       }));
       off.push(table.onRecordDelete(schedule));
     }).catch(() => { /* 用户切换选中记录时仍会刷新预览。 */ });
@@ -979,6 +1047,8 @@ export default function Sidebar() {
   }
 
   const fieldsReady = !!session && !!mapping.number && !!mapping.info && mapping.number !== mapping.info;
+  const matchedField = (key: FieldNameKey, name: string) => knownFields.some(field => field.name === name.trim() && fieldAcceptsValue(key, field));
+  const triggerFieldsMatched = triggerInput.length > 0 && triggerInput.every(name => matchedField('number', name));
   const ready = fieldsReady && !busy;
   const previewTargets = previewRows ? targetsForScope(previewRows, queryScope, context?.recordId || null) : [];
   const requiredQuota = previewTargets.filter(row => row.number.trim() && !hasCurrentResult(row)).length;
@@ -1045,6 +1115,9 @@ export default function Sidebar() {
               <line x1="2" y1="10" x2="22" y2="10" />
             </svg>
             <span>套餐额度</span>
+          </div>
+
+          <div className="sidebar-billing-actions">
             <button
               type="button"
               className={`sidebar-refresh-btn ${refreshing ? 'is-spinning' : ''}`}
@@ -1052,13 +1125,10 @@ export default function Sidebar() {
               aria-label="刷新额度"
               onClick={() => void refreshBilling()}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19" />
               </svg>
             </button>
-          </div>
-
-          <div className="sidebar-billing-actions">
             <button type="button" className="btn-auth-config" onClick={openAuth}>
               授权码配置
             </button>
@@ -1099,6 +1169,8 @@ export default function Sidebar() {
         </div>
       </section>
 
+      {message && <div className="sidebar-message" role="status">{message}</div>}
+
       {/* 温馨提示 */}
       <section className="sidebar-tips-card" aria-label="温馨提示">
         <div className="sidebar-tips-heading">
@@ -1138,7 +1210,6 @@ export default function Sidebar() {
               <h2>批量配置</h2>
               <span className={ready ? 'sidebar-status ready' : 'sidebar-status'}>{session ? (mapping.number && mapping.info ? '已就绪' : '待初始化表格') : '待授权'}</span>
             </div>
-            <p className="sidebar-help">当前数据表：{context?.name || '等待飞书连接…'}。选择输入字段，并按需写入物流详情。</p>
             {!session && <div className="sidebar-auth-needed">
               <p>尚未完成授权码配置，暂不能配置字段与查询。</p>
               <button type="button" className="primary" onClick={openAuth}>去配置授权码</button>
@@ -1150,47 +1221,65 @@ export default function Sidebar() {
                 <span>{fieldsOpen ? '▲' : '▼'}</span>
               </button>
               {fieldsOpen ? <div className="sidebar-field-body">
-                <p className="sidebar-help">已读取当前表格的 {knownFields.length} 个字段。可选择已有文本或数字字段；结果字段缺失时会自动创建。</p>
-                {knownFields.length > 0 && <p className="sidebar-known-fields">现有字段：{knownFields.map(field => field.name).join('、')}</p>}
-                {([
-                  ['number', '快递单号'],
-                  ['phone', '核验手机号（可选）'],
-                  ['info', '快递信息（完整结果）'],
-                ] as [FieldNameKey, string][]).map(([key, label]) => (
-                  <label key={key}>{label}
-                    <input value={fieldNames[key]} autoComplete="off" placeholder={key === 'phone' ? '不使用时留空' : undefined} disabled={!session || busy} onChange={e => setFieldNames(previous => ({ ...previous, [key]: e.target.value }))} />
+                <div className="sidebar-inline-fields">
+                  <label><span className="sidebar-field-label-row"><span>快递单号</span><span className={`sidebar-field-status ${matchedField('number', fieldNames.number) ? 'is-matched' : 'is-unmatched'}`}>{matchedField('number', fieldNames.number) ? '字段已匹配' : '字段未匹配'}</span></span>
+                    <FieldPicker fields={knownFields} fieldKey="number" label="快递单号" value={fieldNames.number} disabled={!session || busy} onChange={value => { setFieldNames(previous => ({ ...previous, number: value })); setTriggerInput(previous => previous.map(name => name === fieldNames.number ? value : name)); }} />
                   </label>
-                ))}
-                <details className="sidebar-optional-field"><summary>快递公司字段（可选）</summary>
-                  <select value={carrierInput} disabled={busy} onChange={e => setCarrierInput(e.target.value)}><option value="">自动识别</option>{knownFields.filter(field => [1, 2].includes(field.type)).map(field => <option key={field.id} value={field.name}>{field.name}</option>)}</select>
-                </details>
-                <details className="sidebar-optional-field"><summary>刷新触发字段（可选）</summary>
-                  <select value={triggerInput} disabled={busy} onChange={e => setTriggerInput(e.target.value)}><option value="">不使用</option>{knownFields.filter(field => [1, 2].includes(field.type)).map(field => <option key={field.id} value={field.name}>{field.name}</option>)}</select>
-                </details>
+                  <label><span className="sidebar-field-label-row"><span>核验手机号</span><span className={`sidebar-field-status ${matchedField('phone', fieldNames.phone) ? 'is-matched' : 'is-unmatched'}`}>{matchedField('phone', fieldNames.phone) ? '字段已匹配' : '字段未匹配'}</span></span>
+                    <FieldPicker fields={knownFields} fieldKey="phone" label="核验手机号" value={fieldNames.phone} disabled={!session || busy} onChange={value => { setFieldNames(previous => ({ ...previous, phone: value })); setTriggerInput(previous => previous.map(name => name === fieldNames.phone ? value : name)); }} />
+                  </label>
+                  <div className="sidebar-trigger-field">
+                    <span className="sidebar-trigger-label"><span>刷新触发字段（多选）</span><span className={`sidebar-field-status ${triggerFieldsMatched ? 'is-matched' : 'is-unmatched'}`}>{triggerFieldsMatched ? '字段已匹配' : '字段未匹配'}</span></span>
+                    <div className={`sidebar-trigger-picker ${triggerPickerOpen ? 'is-open' : ''}`}>
+                      <button
+                        type="button"
+                        className="sidebar-trigger-picker-toggle"
+                        disabled={!session || busy}
+                        aria-haspopup="listbox"
+                        aria-expanded={triggerPickerOpen}
+                        onClick={() => setTriggerPickerOpen(value => !value)}
+                      >
+                        <span>{triggerInput.length ? triggerInput.join('、') : '请选择刷新触发字段'}</span>
+                        <span className="sidebar-trigger-picker-arrow" aria-hidden="true">⌄</span>
+                      </button>
+                      {triggerPickerOpen && <div className="sidebar-trigger-options" role="listbox" aria-label="刷新触发字段" aria-multiselectable="true">
+                        {Array.from(new Set([fieldNames.number, fieldNames.phone, ...selectableFields(knownFields, 'number').map(field => field.name)])).map(name => (
+                          <label key={name} role="option" aria-selected={triggerInput.includes(name)}>
+                            <input
+                              type="checkbox"
+                              checked={triggerInput.includes(name)}
+                              disabled={!session || busy}
+                              onChange={event => setTriggerInput(previous => event.target.checked ? Array.from(new Set([...previous, name])) : previous.filter(value => value !== name))}
+                            />
+                            <span>{name}</span>
+                          </label>
+                        ))}
+                      </div>}
+                    </div>
+                  </div>
+                </div>
                 <label className="sidebar-config-switch"><input type="checkbox" checked={moreInfo} onChange={e => setMoreInfo(e.target.checked)} />获取更多信息</label>
                 {moreInfo && <div className="sidebar-output-fields">{OUTPUT_FIELDS.map(field => <label key={field.key}><span>{field.label}</span><input type="checkbox" checked={outputEnabled[field.key]} onChange={e => setOutputEnabled(previous => ({ ...previous, [field.key]: e.target.checked }))} /></label>)}</div>}
-                {moreInfo && <p className="sidebar-help">勾选的详情会写入同名字段；“快递单号”沿用输入字段。</p>}
                 <label className="sidebar-config-switch"><input type="checkbox" checked={autoUpdate} onChange={e => setAutoUpdate(e.target.checked)} />自动更新</label>
-                {autoUpdate && <p className="sidebar-help">新增记录会自动查询；修改单号、手机号、快递公司或刷新触发字段后，也会自动更新该行快递信息。每次成功查询会消耗额度，边栏关闭后停止自动更新。</p>}
+                {autoUpdate && <p className="sidebar-help">新增记录或修改快递单号、手机号、刷新触发字段后，会自动更新该行物流信息。</p>}
                 <div className="sidebar-field-actions">
                   <button type="button" className="primary" disabled={!session || busy} onClick={() => void initialize()}>{busy ? '正在处理…' : '初始化表格结构'}</button>
-                  <button type="button" disabled={!session || busy} onClick={skipInitialize}>跳过</button>
+                  <button type="button" className="sidebar-skip-button" onClick={event => { event.preventDefault(); event.stopPropagation(); skipInitialize(); }}>跳过</button>
                 </div>
-                <p className="sidebar-help">可从现有字段中选择，也可输入新名称。手机号字段留空即可跳过；初始化会复用已有字段并创建缺少的字段，“跳过”仅匹配已有字段。</p>
-              </div> : <p className="sidebar-field-summary">已按【{(['number', 'phone', 'info'] as FieldNameKey[]).filter(key => Boolean(mapping[key])).map(key => fieldNames[key]).join(' / ') || '尚未匹配字段'}】建立字段，点击展开可修改字段名称或重新初始化。</p>}
+                {skipFeedback && <p className="sidebar-field-action-feedback" role="status">{skipFeedback}</p>}
+                <p className="sidebar-help">初始化会优先匹配同名字段，没有时按默认名称创建；跳过只使用现有字段。</p>
+              </div> : <p className="sidebar-field-summary">{(() => { const num = matchedField('number', fieldNames.number); const phone = matchedField('phone', fieldNames.phone); const trigger = triggerFieldsMatched; const allMatched = num && phone && trigger; return <span className={`sidebar-field-status ${allMatched ? 'is-matched' : 'is-unmatched'}`}>{allMatched ? '全部字段已匹配' : '部分字段未匹配'}</span>; })()}</p>}
             </div>
           </section>
 
           {fieldsReady && <section className="sidebar-panel sidebar-query-card">
             <h2>批量查询</h2>
-            <p className="sidebar-help">选择查询范围后点击开始查询，结果会写回当前表格。</p>
             <>
               <div className="sidebar-query-scopes">
                 <label><input type="radio" name="query-scope" checked={queryScope === 'current'} onChange={() => setQueryScope('current')} />当前选中记录（仅一行） <span>{previewRows ? previewRows.filter(row => row.id === context?.recordId).length : '…'} 条</span></label>
                 <label><input type="radio" name="query-scope" checked={queryScope === 'empty'} onChange={() => setQueryScope('empty')} />仅无结果的记录 <span>{previewRows ? previewRows.filter(row => !hasCurrentResult(row)).length : '…'} 条</span></label>
                 <label><input type="radio" name="query-scope" checked={queryScope === 'all'} onChange={() => setQueryScope('all')} />整列（当前数据表） <span>{previewRows ? previewRows.length : '…'} 条</span></label>
               </div>
-              {previewError && <p className="sidebar-help" role="alert">记录预览失败：{previewError}</p>}
               {queryScope === 'current' && !context?.recordId && <p className="sidebar-help">请点击要查询的行内任意单元格。</p>}
               <div className="sidebar-query-cost">本次消耗 {requiredQuota} 次 <span>查询后剩余 {billing?.remainingQuota === null ? '不限' : Math.max(0, (billing?.remainingQuota ?? 0) - requiredQuota)} 次</span></div>
               {quotaInsufficient && <p className="sidebar-quota-warning">当前额度 {billing?.remainingQuota ?? 0} 次，本次需要 {requiredQuota} 次，请先领取体验额度或充值。</p>}
@@ -1202,30 +1291,13 @@ export default function Sidebar() {
         </>
       )}
 
-      {/* 6. 反馈与支持卡片（精准对齐电子签名截图 2 & 5） */}
-      <section className="sidebar-feedback-card" aria-label="反馈与支持">
-        <div className="sidebar-feedback-title">
-          <span>💬</span>
-          <span>反馈与支持</span>
-        </div>
-        <div className="sidebar-feedback-desc">
-          如在使用中遇到问题、发现不当内容或有任何建议，欢迎反馈，我们将及时响应处理。
-        </div>
-        <div className="sidebar-feedback-action">
-          <a className="sidebar-feedback-btn" href={officialGroupUrl || '#'} target="_blank" rel="noopener noreferrer" onClick={e => { if (!officialGroupUrl) e.preventDefault(); }}>
-            <span>💬</span>
-            <span>加入官方交流群</span>
-          </a>
-        </div>
-      </section>
-
       </main>
 
       {queryProgress && <div className="sidebar-modal-backdrop" role="presentation">
         <div className="sidebar-modal sidebar-query-modal" role="dialog" aria-modal="true" aria-label="批量查询进度">
           <div className="sidebar-modal-body">
             {queryProgress.phase !== 'done' && <div className="sidebar-query-spinner" aria-hidden="true" />}
-            <h2>{queryProgress.phase === 'done' ? queryProgress.stopped ? '查询已停止' : queryProgress.error ? '查询未完成' : '查询完成' : '正在批量处理…'}</h2>
+            <h2>{queryProgress.phase === 'done' ? queryProgress.stopped ? '查询已停止' : '查询完成' : '正在批量处理…'}</h2>
             <div className="sidebar-query-percent">{queryProgress.total ? Math.round(queryProgress.done / queryProgress.total * 100) : 0}%</div>
             <div className="sidebar-query-track" role="progressbar" aria-valuenow={queryProgress.done} aria-valuemin={0} aria-valuemax={queryProgress.total || 1}>
               <span style={{ width: `${queryProgress.total ? queryProgress.done / queryProgress.total * 100 : 0}%` }} />
@@ -1238,8 +1310,6 @@ export default function Sidebar() {
             </div>
             {queryProgress.phase === 'running' && <p className="sidebar-query-note">正在处理，请稍候…</p>}
             {queryProgress.stopped && <p className="sidebar-query-note">剩余 {queryProgress.total - queryProgress.done} 条未处理。</p>}
-            {queryProgress.error && <p className="sidebar-query-failure" role="alert">{queryProgress.error}</p>}
-            {queryProgress.failures.length > 0 && <div className="sidebar-query-failures"><strong>失败原因</strong><ul>{queryProgress.failures.map((item, index) => <li key={`${item.number}-${index}`}><b>{item.number}</b>：{item.reason}</li>)}</ul></div>}
             <div className="sidebar-modal-actions">
               {queryProgress.phase === 'done' ? <button type="button" className="primary" onClick={() => setQueryProgress(null)}>关闭</button> : <button type="button" disabled={queryProgress.phase === 'loading' || cancelled.current} onClick={() => { cancelled.current = true; setQueryProgress(previous => previous ? { ...previous, stopped: true } : previous); }}>停止后续查询</button>}
             </div>
@@ -1501,67 +1571,6 @@ export default function Sidebar() {
                 <button type="button" onClick={() => setRefundModalOpen(false)}>取消</button>
                 <button type="button" className="primary" disabled={!refundOrderId.trim() || refundBusy} onClick={() => void handleRefund()}>
                   {refundBusy ? '处理中…' : '申请退款'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 弹窗 7：加入官方交流群与反馈支持（精准对齐截图 2 & 5） */}
-      {feedbackModalOpen && (
-        <div className="sidebar-modal-backdrop" role="presentation">
-          <div className="sidebar-modal" role="dialog" aria-modal="true" aria-label="官方交流群与反馈">
-            <div className="sidebar-modal-header">
-              <h2>官方交流群与反馈支持</h2>
-              <button className="sidebar-modal-close" onClick={() => setFeedbackModalOpen(false)}>×</button>
-            </div>
-            <div className="sidebar-modal-body">
-              <div className="sidebar-group-box">
-                <div className="sidebar-group-qr">
-                  <svg viewBox="0 0 100 100" fill="#1677ff">
-                    <path d="M15 15h30v30h-30z M55 15h30v30h-30z M15 55h30v30h-30z M60 60h10v10h-10z M75 60h10v10h-10z M60 75h10v10h-10z M75 75h10v10h-10z" />
-                  </svg>
-                </div>
-                <div className="sidebar-group-info">
-                  <strong>扫码加入官方交流群</strong><br />
-                  💬 官方客服微信：<b>ahsz_support</b><br />
-                  📮 技术支持邮箱：<b>support@ahsz.com</b><br />
-                  🕒 服务时间：工作日 9:00 - 18:00
-                </div>
-              </div>
-
-              <div className="sidebar-feedback-form">
-                <label>
-                  意见或问题反馈
-                  <textarea
-                    rows={3}
-                    value={feedbackContent}
-                    onChange={e => setFeedbackContent(e.target.value)}
-                    placeholder="请描述您在使用过程中遇到的问题或改进建议…"
-                  />
-                </label>
-                <label>
-                  联系方式（手机号/邮箱/飞书，选填）
-                  <input
-                    type="text"
-                    value={feedbackContact}
-                    onChange={e => setFeedbackContact(e.target.value)}
-                    placeholder="以便工作人员快速回复您"
-                  />
-                </label>
-              </div>
-
-              {feedbackSuccess && (
-                <p className="sidebar-help" style={{ color: '#52c41a', textAlign: 'center' }}>
-                  ✓ 反馈已收到，工作人员将在工作时间内及时处理！
-                </p>
-              )}
-
-              <div className="sidebar-modal-actions">
-                <button type="button" onClick={() => setFeedbackModalOpen(false)}>关闭</button>
-                <button type="button" className="primary" disabled={!feedbackContent.trim() || feedbackBusy} onClick={() => void submitFeedback()}>
-                  {feedbackBusy ? '提交中…' : '提交反馈'}
                 </button>
               </div>
             </div>
