@@ -1222,14 +1222,14 @@ export default function Sidebar() {
               </button>
               {fieldsOpen ? <div className="sidebar-field-body">
                 <div className="sidebar-inline-fields">
-                  <label><span className="sidebar-field-label-row"><span>快递单号</span><span className={`sidebar-field-status ${matchedField('number', fieldNames.number) ? 'is-matched' : 'is-unmatched'}`}>{matchedField('number', fieldNames.number) ? '字段已匹配' : '字段未匹配'}</span></span>
+                  <label><span className="sidebar-field-label-row"><span>快递单号</span><span className={`sidebar-field-status ${matchedField('number', fieldNames.number) ? 'is-matched' : 'is-unmatched'}`}>{matchedField('number', fieldNames.number) ? '字段已匹配' : '未匹配到，系统自动生成'}</span></span>
                     <FieldPicker fields={knownFields} fieldKey="number" label="快递单号" value={fieldNames.number} disabled={!session || busy} onChange={value => { setFieldNames(previous => ({ ...previous, number: value })); setTriggerInput(previous => previous.map(name => name === fieldNames.number ? value : name)); }} />
                   </label>
-                  <label><span className="sidebar-field-label-row"><span>核验手机号</span><span className={`sidebar-field-status ${matchedField('phone', fieldNames.phone) ? 'is-matched' : 'is-unmatched'}`}>{matchedField('phone', fieldNames.phone) ? '字段已匹配' : '字段未匹配'}</span></span>
+                  <label><span className="sidebar-field-label-row"><span>核验手机号</span><span className={`sidebar-field-status ${matchedField('phone', fieldNames.phone) ? 'is-matched' : 'is-unmatched'}`}>{matchedField('phone', fieldNames.phone) ? '字段已匹配' : '未匹配到，系统自动生成'}</span></span>
                     <FieldPicker fields={knownFields} fieldKey="phone" label="核验手机号" value={fieldNames.phone} disabled={!session || busy} onChange={value => { setFieldNames(previous => ({ ...previous, phone: value })); setTriggerInput(previous => previous.map(name => name === fieldNames.phone ? value : name)); }} />
                   </label>
                   <div className="sidebar-trigger-field">
-                    <span className="sidebar-trigger-label"><span>刷新触发字段（多选）</span><span className={`sidebar-field-status ${triggerFieldsMatched ? 'is-matched' : 'is-unmatched'}`}>{triggerFieldsMatched ? '字段已匹配' : '字段未匹配'}</span></span>
+                    <span className="sidebar-trigger-label"><span>刷新触发字段（多选）</span><span className={`sidebar-field-status ${triggerFieldsMatched ? 'is-matched' : 'is-unmatched'}`}>{triggerFieldsMatched ? '字段已匹配' : '未匹配到，系统自动生成'}</span></span>
                     <div className={`sidebar-trigger-picker ${triggerPickerOpen ? 'is-open' : ''}`}>
                       <button
                         type="button"
