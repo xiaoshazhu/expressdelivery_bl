@@ -36,6 +36,10 @@ test('快递100真实查询使用 SHA256 签名并映射完整轨迹', async () 
   const cached = await service.query({ number: 'JD001234567890', carrier: '京东' });
   assert.equal(cached.cached, true);
   assert.equal(calls.length, 1);
+  const fresh = await service.query({ number: 'JD001234567890', carrier: '京东', fresh: true });
+  assert.equal(fresh.cached, undefined);
+  assert.equal(fresh.queriedAt, new Date(now).toISOString());
+  assert.equal(calls.length, 2);
 });
 
 test('自动识别后，顺丰和中通缺少手机号时不发起收费查询', async () => {

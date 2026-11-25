@@ -63,7 +63,7 @@ export function createAliyunKzExpressProvider({ appCode, fetchImpl = fetch, endp
   const cache = new Map();
 
   return {
-    async query({ number, carrier, phone }) {
+    async query({ number, carrier, phone, fresh = false }) {
       const cpCode = carrierCode(carrier);
       const mobile = mobileValue(phone);
       const effectiveCpCode = cpCode || phoneRequirement(number, carrier)?.code || '';
@@ -73,7 +73,7 @@ export function createAliyunKzExpressProvider({ appCode, fetchImpl = fetch, endp
       }
       const cacheKey = `${effectiveCpCode || cpCode || 'AUTO'}:${number}:${mobile}`;
       const cached = cache.get(cacheKey);
-      if (cached && cached.expiresAt > now()) return { ...cached.result, cached: true };
+      if (!fresh && cached && cached.expiresAt > now()) return { ...cached.result, cached: true };
 
       const body = new URLSearchParams({ expressNo: number });
       if (mobile) body.set('mobile', mobile);

@@ -8,7 +8,7 @@
     "server": "node --env-file-if-exists=.env server/index.mjs",
     "build": "tsc --noEmit && vite build",
     "start": "node --env-file-if-exists=.env server/index.mjs",
-    "test": "node --test tests/aliyun-kzexpress.test.mjs tests/kuaidi100.test.mjs tests/service.test.mjs"
+    "test": "node --test tests/aliyun-kzexpress.test.mjs tests/kuaidi100.test.mjs tests/service.test.mjs tests/auto-schedule.test.mjs"
   },
   "dependencies": {
     "@lark-base-open/js-sdk": "1.0.2",

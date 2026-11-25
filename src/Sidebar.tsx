@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Selection } from '@lark-base-open/js-sdk';
+import TimePicker from './TimePicker';
 import type { Field, Mapping, OutputKey, QueryResult, Row } from './types';
+import { claimDueAutoRuns, createAutoSchedule, isDailyTime, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS, nextAutoRunAt, parseIntervalHours, pendingAutoRuns, readAutoSchedules } from './auto-schedule.mjs';
 import './sidebar.css';
 
 type Context = { baseId: string; tableId: string; name: string; recordId: string | null };
-type Session = { token: string; fields: Field[] };
+type AutoSchedules = ReturnType<typeof readAutoSchedules>;
+type ScheduleMode = keyof AutoSchedules;
+type IntervalUnit = 'hours' | 'minutes';
+type Session = { token: string; fields: Field[]; expiresAt: number };
 type BillingStatus = { active: boolean; enforced: boolean; trialClaimed?: boolean; trialClaimedAt?: string | null; billingType: 'quota' | 'duration' | null; usedQuota: number; maxQuota: number; remainingQuota: number | null; expireTime: string | null };
 type EnterpriseStatus = { registered: boolean; name: string; enterpriseType?: string; lookupUnavailable?: boolean };
 type RechargePlan = { plan_id: string; name: string; quota?: number; days?: number; price: number; enabled: boolean; billing_type: string; description?: string };
@@ -130,8 +135,31 @@ const DEFAULT_TENANT_KEY = '';
 const trialOfferSeenKey = (tenant: string) => `express-sidebar:trial-offer-seen:${tenant}`;
 const authCodeKey = (tenant: string, baseId: string) => `express-sidebar:auth:${tenant}:${baseId}`;
 const batchConfigKey = (baseId: string, tableId: string) => `express-sidebar:batch-config:${baseId}:${tableId}`;
+const autoScheduleKey = (baseId: string, tableId: string) => `express-sidebar:daily-schedule:${baseId}:${tableId}`;
+const autoUpdateLastRunKey = (baseId: string, tableId: string) => `express-sidebar:auto-update-last-run:${baseId}:${tableId}`;
 function savedBatchConfig(baseId: string, tableId: string): Record<string, any> {
   try { return JSON.parse(window.localStorage.getItem(batchConfigKey(baseId, tableId)) || '{}'); } catch { return {}; }
+}
+function savedAutoSchedules(key: string) {
+  try { return readAutoSchedules(JSON.parse(window.localStorage.getItem(key) || 'null')); }
+  catch { return readAutoSchedules(null); }
+}
+function intervalDraftValue(hours: number, unit: IntervalUnit) {
+  return unit === 'minutes' ? String(Math.round(hours * 60)) : String(Number(hours.toFixed(10)));
+}
+function toScheduleDraft({ daily, interval }: AutoSchedules) {
+  const unit: IntervalUnit = interval.intervalHours < 1 || !Number.isInteger(interval.intervalHours * 2) ? 'minutes' : 'hours';
+  return {
+    daily: { enabled: daily.enabled, time: daily.time },
+    interval: { enabled: interval.enabled, unit, value: intervalDraftValue(interval.intervalHours, unit) },
+  };
+}
+function autoScheduleDescription(schedule: AutoSchedules[ScheduleMode]) {
+  if (schedule.mode === 'daily') return `每天北京时间 ${schedule.time}`;
+  const total = Math.round(schedule.intervalHours * 60);
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  return `每隔 ${[hours && `${hours} 小时`, minutes && `${minutes} 分钟`].filter(Boolean).join(' ')}`;
 }
 type FieldNameKey = 'number' | 'phone' | 'info';
 const DEFAULT_FIELD_NAMES: Record<FieldNameKey, string> = {
@@ -308,7 +336,12 @@ export default function Sidebar() {
   const [fieldNames, setFieldNames] = useState(DEFAULT_FIELD_NAMES);
   const [outputEnabled, setOutputEnabled] = useState<Record<OutputKey, boolean>>(Object.fromEntries(OUTPUT_FIELDS.map(field => [field.key, true])) as Record<OutputKey, boolean>);
   const [moreInfo, setMoreInfo] = useState(true);
-  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [autoSchedules, setAutoSchedules] = useState(() => readAutoSchedules(null));
+  const [scheduleDraft, setScheduleDraft] = useState(() => toScheduleDraft(readAutoSchedules(null)));
+  const [autoRunStatus, setAutoRunStatus] = useState('');
+  const watchingSince = useRef(0);
+  const autoUpdateEnabled = autoSchedules.daily.enabled || autoSchedules.interval.enabled;
+  const intervalHours = parseIntervalHours(scheduleDraft.interval.value, scheduleDraft.interval.unit);
   const [triggerInput, setTriggerInput] = useState<string[]>([DEFAULT_FIELD_NAMES.number, DEFAULT_FIELD_NAMES.phone]);
   const [triggerPickerOpen, setTriggerPickerOpen] = useState(false);
   const loadedConfigKey = useRef('');
@@ -316,8 +349,8 @@ export default function Sidebar() {
     if (!context) return;
     const key = batchConfigKey(context.baseId, context.tableId);
     if (loadedConfigKey.current !== key) return;
-    try { window.localStorage.setItem(key, JSON.stringify({ fieldNames, outputEnabled, moreInfo, autoUpdate, triggerInput })); } catch { /* Storage may be unavailable. */ }
-  }, [context?.baseId, context?.tableId, fieldNames, outputEnabled, moreInfo, autoUpdate, triggerInput]);
+    try { window.localStorage.setItem(key, JSON.stringify({ fieldNames, outputEnabled, moreInfo, triggerInput })); } catch { /* Storage may be unavailable. */ }
+  }, [context?.baseId, context?.tableId, fieldNames, outputEnabled, moreInfo, triggerInput]);
   const [fieldsOpen, setFieldsOpen] = useState(true);
   const [initialized, setInitialized] = useState(false);
   const [queryScope, setQueryScope] = useState<'current' | 'empty' | 'all'>('current');
@@ -455,6 +488,10 @@ export default function Sidebar() {
         setMapping({ number: '', info: '' });
         setKnownFields([]);
         setFieldNames(DEFAULT_FIELD_NAMES);
+        const defaults = readAutoSchedules(null);
+        setAutoSchedules(defaults);
+        setScheduleDraft(toScheduleDraft(defaults));
+        setAutoRunStatus('');
         setTriggerInput([DEFAULT_FIELD_NAMES.number, DEFAULT_FIELD_NAMES.phone]);
         setTriggerPickerOpen(false);
         setInitialized(false);
@@ -472,10 +509,13 @@ export default function Sidebar() {
         const saved = savedBatchConfig(next.baseId, next.tableId);
         setFieldNames({ ...DEFAULT_FIELD_NAMES, ...(saved.fieldNames || {}) });
         setMoreInfo(saved.moreInfo !== false);
-        setAutoUpdate(saved.autoUpdate !== false);
+        const schedules = savedAutoSchedules(autoScheduleKey(next.baseId, next.tableId));
+        setAutoSchedules(schedules);
+        setScheduleDraft(toScheduleDraft(schedules));
         setOutputEnabled({ ...Object.fromEntries(OUTPUT_FIELDS.map(field => [field.key, true])), ...(saved.outputEnabled || {}), syncLog: true } as Record<OutputKey, boolean>);
         setTriggerInput(resolvedTriggerNames([], saved, saved.fieldNames));
         active.current = next;
+        watchingSince.current = Date.now();
         setContext(next);
         void table.getFieldMetaList().then(items => {
           if (disposed || request !== sequence || credential.current) return;
@@ -942,6 +982,47 @@ export default function Sidebar() {
     setMessage(notice);
   }
 
+  function saveAutoSchedule(mode: ScheduleMode, enabled: boolean) {
+    if (!context || !session) return;
+    const key = autoScheduleKey(context.baseId, context.tableId);
+    const saved = savedAutoSchedules(key);
+    const previous = saved[mode];
+    const plan = !enabled ? { ...previous, enabled: false }
+      : createAutoSchedule({
+        ...previous,
+        enabled: true,
+        ...(mode === 'daily' ? { time: scheduleDraft.daily.time } : { intervalHours: intervalHours ?? NaN }),
+      });
+    if (enabled && !plan.enabled) return;
+    const next = { ...saved, [mode]: plan };
+    try {
+      window.localStorage.setItem(key, JSON.stringify(next));
+      setAutoSchedules(next);
+      setScheduleDraft(draft => ({ ...draft, [mode]: { ...draft[mode], enabled } }));
+      setMessage(enabled ? '' : `已关闭${mode === 'daily' ? '每日定时更新' : '按间隔更新'}。`);
+    } catch {
+      setMessage('无法保存自动更新设置，请检查浏览器的存储权限。');
+    }
+  }
+
+  function toggleSchedule(mode: ScheduleMode, enabled: boolean) {
+    if (!enabled && autoSchedules[mode].enabled) saveAutoSchedule(mode, false);
+    else setScheduleDraft(draft => ({ ...draft, [mode]: { ...draft[mode], enabled } }));
+  }
+
+  useEffect(() => {
+    if (!context) return;
+    const key = autoScheduleKey(context.baseId, context.tableId);
+    const sync = (event: StorageEvent) => {
+      if (event.key !== key && event.key !== null) return;
+      const saved = savedAutoSchedules(key);
+      setAutoSchedules(saved);
+      setScheduleDraft(toScheduleDraft(saved));
+    };
+    window.addEventListener('storage', sync);
+    return () => window.removeEventListener('storage', sync);
+  }, [context?.baseId, context?.tableId]);
+
   // 执行查询
   const targetsForScope = (rows: Row[], scope: 'current' | 'empty' | 'all', selectedId: string | null) =>
     scope === 'current' ? rows.filter(row => row.id === selectedId) : scope === 'empty' ? rows.filter(row => !hasCurrentResult(row)) : rows;
@@ -962,7 +1043,7 @@ export default function Sidebar() {
     return () => { disposed = true; };
   }, [session?.token, mapping.number, mapping.phone, mapping.info, mapping.carrier, mapping.trigger, mapping.outputs, previewNonce]);
 
-  // 飞书表格变化时刷新数量；开启自动更新后，新增记录与输入字段修改会自动查询。
+  // 飞书表格变化时刷新数量；新增记录与输入字段修改始终自动查询。
   useEffect(() => {
     if (!embedded || !session || !context?.tableId) return;
     let disposed = false;
@@ -975,7 +1056,7 @@ export default function Sidebar() {
       timer = window.setTimeout(() => { if (!disposed) setPreviewNonce(value => value + 1); }, 350);
     };
     const autoQuery = (recordId: string, refresh = false) => {
-      if (!autoUpdate || !mapping.number || !mapping.info || !/^rec[A-Za-z0-9]+$/.test(recordId)) return;
+      if (!mapping.number || !mapping.info || !/^rec[A-Za-z0-9]+$/.test(recordId)) return;
       window.clearTimeout(pending.get(recordId));
       pending.set(recordId, window.setTimeout(() => {
         pending.delete(recordId);
@@ -995,7 +1076,9 @@ export default function Sidebar() {
         schedule();
         const { recordId, fieldIds } = event.data || {};
         const triggerIds = mapping.trigger || [];
-        if (recordId && fieldIds?.some(id => [mapping.number, mapping.phone, mapping.carrier, ...triggerIds].includes(id))) autoQuery(recordId, true);
+        const immediateIds = [mapping.number, mapping.phone].filter(Boolean);
+        const optionalIds = autoUpdateEnabled ? [mapping.carrier, ...triggerIds].filter(Boolean) : [];
+        if (recordId && fieldIds?.some(id => [...immediateIds, ...optionalIds].includes(id))) autoQuery(recordId, true);
       }));
       off.push(table.onRecordDelete(schedule));
     }).catch(() => { /* 用户切换选中记录时仍会刷新预览。 */ });
@@ -1005,7 +1088,142 @@ export default function Sidebar() {
       pending.forEach(timeout => window.clearTimeout(timeout));
       off.forEach(unsubscribe => unsubscribe());
     };
-  }, [embedded, session?.token, context?.tableId, autoUpdate, mapping.number, mapping.phone, mapping.carrier, mapping.trigger, mapping.info, mapping.outputs, carrier]);
+  }, [embedded, session?.token, context?.tableId, autoUpdateEnabled, mapping.number, mapping.phone, mapping.carrier, mapping.trigger, mapping.info, mapping.outputs, carrier]);
+
+  const connected = Boolean(session);
+  useEffect(() => {
+    if (!embedded || !connected || !context || !autoUpdateEnabled || !mapping.number || !mapping.info || mapping.number === mapping.info) return;
+    const { baseId, tableId } = context;
+    const scheduleKey = autoScheduleKey(baseId, tableId);
+    const lockKey = autoUpdateLastRunKey(baseId, tableId);
+    const version = revision.current;
+    const watchedAt = watchingSince.current;
+    let disposed = false;
+    let retryAfter = 0;
+    const isCurrent = () => !disposed && revision.current === version;
+    const runAutoUpdate = async () => {
+      if (!isCurrent() || lock.current || !credential.current) return;
+      lock.current = true;
+      setBusy(true);
+      let claimed = false;
+      const renewSession = async (previous: Session) => {
+        const personalBaseToken = window.localStorage.getItem(authCodeKey(currentTenant(), baseId));
+        if (!personalBaseToken) throw new Error('未找到当前表格的授权码，请重新授权。');
+        const next = await post<Session>('connect', {
+          mode: 'feishu', appToken: baseId, tableId, tenantKey: currentTenant(), personalBaseToken,
+        }, '', 18000);
+        if (!isCurrent()) {
+          void post('disconnect', {}, next.token).catch(() => {});
+          return null;
+        }
+        credential.current = next;
+        setSession(next);
+        void post('disconnect', {}, previous.token).catch(() => {});
+        return next;
+      };
+      try {
+        if (!pendingAutoRuns(window.localStorage, lockKey, savedAutoSchedules(scheduleKey), Date.now(), watchedAt).length) return;
+        setAutoRunStatus('已到查询时间，正在读取当前表格…');
+        let current: Session | null = credential.current;
+        if (current.expiresAt <= Date.now() + 60_000) current = await renewSession(current);
+        if (!current || !isCurrent()) return;
+        const loadRows = (token: string) => post<{ rows: Row[] }>('base/rows', { mapping }, token);
+        const { rows } = await loadRows(current.token).catch(async error => {
+          if (!(error instanceof Error) || !error.message.includes('SESSION_EXPIRED') || !isCurrent() || !current) throw error;
+          current = await renewSession(current);
+          return current ? loadRows(current.token) : { rows: [] };
+        });
+        if (!isCurrent() || !current) return;
+        // Readiness failures don't consume the slot. Claim under the table lock before querying any waybill.
+        const saved = savedAutoSchedules(scheduleKey);
+        const runs = claimDueAutoRuns(window.localStorage, lockKey, saved, Date.now(), watchedAt);
+        if (!runs.length) {
+          setAutoRunStatus('');
+          return;
+        }
+        claimed = true;
+        const { mode, slot } = runs[0];
+        setAutoRunStatus(`正在执行自动更新（${runs.map(run => autoScheduleDescription(saved[run.mode])).join('、')}）…`);
+        let success = 0;
+        let failed = 0;
+        let firstIssue = '';
+        const targets = rows.filter(row => row.number.trim());
+        let skipped = rows.length - targets.length;
+        for (const [index, row] of targets.entries()) {
+          if (!isCurrent() || !current) return;
+          if (current.expiresAt <= Date.now() + 30_000) {
+            current = await renewSession(current);
+            if (!current || !isCurrent()) return;
+          }
+          try {
+            const result = await post<{ queried?: boolean; skipped?: boolean; reason?: string }>('base/auto-query-record', {
+              recordId: row.id,
+              mapping,
+              carrier: row.carrier || carrier,
+              refresh: true,
+              fresh: true,
+              preserveExistingOnFailure: true,
+              requestId: `auto-${mode}:${baseId}:${tableId}:${slot}:${row.id}`,
+            }, current.token);
+            if (result.skipped || result.queried === false) {
+              skipped++;
+              firstIssue ||= result.reason || '';
+            }
+            else success++;
+          } catch (error) {
+            failed++;
+            firstIssue ||= readableQueryError(error);
+          }
+          if (isCurrent() && index + 1 < targets.length) await new Promise(resolve => setTimeout(resolve, 550));
+        }
+        if (isCurrent()) {
+          const summary = targets.length ? `成功 ${success}，失败 ${failed}，跳过 ${skipped}。${firstIssue ? `示例原因：${firstIssue}` : ''}` : '未找到填有快递单号的记录。';
+          setAutoRunStatus(`最近更新（北京时间 ${formatClaimTime(new Date(Date.now()).toISOString())}）：${summary}`);
+          setPreviewNonce(value => value + 1);
+          void refreshBilling();
+        }
+      } catch (error) {
+        if (!claimed) retryAfter = Date.now() + 30_000;
+        if (isCurrent()) setAutoRunStatus(`自动更新${claimed ? '失败' : '暂未执行'}：${readableQueryError(error)}`);
+      } finally {
+        lock.current = false;
+        setBusy(false);
+      }
+    };
+
+    const check = async () => {
+      if (!isCurrent() || lock.current) return;
+      const saved = savedAutoSchedules(scheduleKey);
+      const now = Date.now();
+      if (now < retryAfter) return;
+      try {
+        if (!pendingAutoRuns(window.localStorage, lockKey, saved, now, watchedAt).length) return;
+      } catch {
+        setAutoRunStatus('无法读取自动更新状态，请检查浏览器的存储权限。');
+        return;
+      }
+      try {
+        if (typeof navigator.locks?.request === 'function') {
+          await navigator.locks.request(lockKey, { ifAvailable: true }, held => held ? runAutoUpdate() : undefined);
+          return;
+        }
+      } catch { /* Some embedded browsers restrict Web Locks. */ }
+      await runAutoUpdate();
+    };
+    const tick = () => { void check(); };
+    tick();
+    const timer = window.setInterval(tick, 10_000);
+    window.addEventListener('focus', tick);
+    window.addEventListener('pageshow', tick);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', tick);
+      window.removeEventListener('pageshow', tick);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [embedded, connected, context?.baseId, context?.tableId, autoUpdateEnabled, mapping, carrier, tenantKey]);
 
   async function query(scope: 'current' | 'empty' | 'all') {
     setQueryProgress({ phase: 'loading', total: 0, done: 0, success: 0, failed: 0, skipped: 0, failures: [] });
@@ -1053,6 +1271,13 @@ export default function Sidebar() {
   const previewTargets = previewRows ? targetsForScope(previewRows, queryScope, context?.recordId || null) : [];
   const requiredQuota = previewTargets.filter(row => row.number.trim() && !hasCurrentResult(row)).length;
   const quotaInsufficient = billing?.billingType === 'quota' && requiredQuota > (billing.remainingQuota ?? 0);
+  const dailyChanged = !autoSchedules.daily.enabled || autoSchedules.daily.time !== scheduleDraft.daily.time;
+  const intervalChanged = !autoSchedules.interval.enabled || autoSchedules.interval.intervalHours !== intervalHours;
+  const enabledSchedules = [autoSchedules.daily, autoSchedules.interval].filter(schedule => schedule.enabled);
+  const scheduledFor = (mode: ScheduleMode) => {
+    const next = nextAutoRunAt(autoSchedules[mode]);
+    return next === null ? '' : `下次计划：北京时间 ${formatClaimTime(new Date(next).toISOString())}`;
+  };
 
   return (
     <div className="sidebar-app">
@@ -1260,16 +1485,80 @@ export default function Sidebar() {
                 </div>
                 <label className="sidebar-config-switch"><input type="checkbox" checked={moreInfo} onChange={e => setMoreInfo(e.target.checked)} />获取更多信息</label>
                 {moreInfo && <div className="sidebar-output-fields">{OUTPUT_FIELDS.map(field => <label key={field.key}><span>{field.label}</span><input type="checkbox" checked={outputEnabled[field.key]} onChange={e => setOutputEnabled(previous => ({ ...previous, [field.key]: e.target.checked }))} /></label>)}</div>}
-                <label className="sidebar-config-switch"><input type="checkbox" checked={autoUpdate} onChange={e => setAutoUpdate(e.target.checked)} />自动更新</label>
-                {autoUpdate && <p className="sidebar-help">新增记录或修改快递单号、手机号、刷新触发字段后，会自动更新该行物流信息。</p>}
+                <div className="sidebar-auto-update" role="group" aria-labelledby="sidebar-auto-update-title">
+                  <p className="sidebar-auto-update-title" id="sidebar-auto-update-title">自动更新</p>
+                  <div className="sidebar-auto-update-plans">
+                    <div>
+                      <label className="sidebar-auto-update-mode">
+                        <input type="checkbox" checked={scheduleDraft.daily.enabled} disabled={!session} onChange={event => toggleSchedule('daily', event.target.checked)} />
+                        每日定时
+                      </label>
+                      {scheduleDraft.daily.enabled && <>
+                        <p className="sidebar-auto-update-time" id="sidebar-daily-time-label">每日查询时间（北京时间）</p>
+                        <div className="sidebar-auto-update-row">
+                          <TimePicker labelledBy="sidebar-daily-time-label" value={scheduleDraft.daily.time} disabled={!session} onChange={time => setScheduleDraft(previous => ({ ...previous, daily: { ...previous.daily, time } }))} />
+                          <button type="button" className={`sidebar-save-schedule${dailyChanged ? '' : ' is-saved'}`} disabled={!session || !dailyChanged || !isDailyTime(scheduleDraft.daily.time)} onClick={() => saveAutoSchedule('daily', true)}>{dailyChanged ? '保存时间' : '保存成功'}</button>
+                        </div>
+                        {!dailyChanged && <p className="sidebar-help">{scheduledFor('daily')}</p>}
+                      </>}
+                    </div>
+                    <div>
+                      <label className="sidebar-auto-update-mode">
+                        <input type="checkbox" checked={scheduleDraft.interval.enabled} disabled={!session} onChange={event => toggleSchedule('interval', event.target.checked)} />
+                        按间隔
+                      </label>
+                      {scheduleDraft.interval.enabled && <>
+                        <label className="sidebar-auto-update-time" htmlFor="sidebar-interval-value">查询间隔</label>
+                        <div className="sidebar-auto-update-row">
+                          <div className="sidebar-interval-field">
+                            <input
+                              id="sidebar-interval-value"
+                              type="text"
+                              inputMode={scheduleDraft.interval.unit === 'minutes' ? 'numeric' : 'decimal'}
+                              value={scheduleDraft.interval.value}
+                              disabled={!session}
+                              aria-invalid={intervalHours === null}
+                              aria-describedby="sidebar-interval-hint"
+                              onChange={event => {
+                                const value = event.target.value;
+                                setScheduleDraft(previous => ({ ...previous, interval: { ...previous.interval, value } }));
+                              }}
+                            />
+                            <select aria-label="查询间隔单位" value={scheduleDraft.interval.unit} disabled={!session} onChange={event => {
+                              const unit = event.target.value as IntervalUnit;
+                              setScheduleDraft(previous => ({
+                                ...previous,
+                                interval: { ...previous.interval, unit, value: intervalHours === null ? previous.interval.value : intervalDraftValue(intervalHours, unit) },
+                              }));
+                            }}>
+                              <option value="hours">小时</option>
+                              <option value="minutes">分钟</option>
+                            </select>
+                          </div>
+                          <button type="button" className={`sidebar-save-schedule${intervalChanged ? '' : ' is-saved'}`} disabled={!session || !intervalChanged || intervalHours === null} onClick={() => saveAutoSchedule('interval', true)}>{intervalChanged ? '保存间隔' : '保存成功'}</button>
+                        </div>
+                        {!intervalChanged && <p className="sidebar-help">{scheduledFor('interval')}</p>}
+                        <p className="sidebar-help" id="sidebar-interval-hint">
+                          {intervalHours === null ? `请输入 ${MIN_INTERVAL_HOURS * 60} 分钟到 ${MAX_INTERVAL_HOURS} 小时之间的整分钟间隔。` : `最短 ${MIN_INTERVAL_HOURS * 60} 分钟。可填 8、8.5 小时，或切换到分钟输入。`}
+                        </p>
+                      </>}
+                    </div>
+                  </div>
+                  {autoUpdateEnabled && <p className="sidebar-help">
+                    已开启：{enabledSchedules.map(autoScheduleDescription).join('、')}刷新当前表格。请保持边栏打开并停留在当前表格；查询成功消耗额度。
+                  </p>}
+                  {autoUpdateEnabled && !fieldsReady && <p className="sidebar-help">自动更新暂不可用，请确认已授权，并匹配快递单号和快递信息字段。</p>}
+                  {autoUpdateEnabled && autoRunStatus && <p className="sidebar-auto-run-status" role="status">{autoRunStatus}</p>}
+                </div>
                 <div className="sidebar-field-actions">
                   <button type="button" className="primary" disabled={!session || busy} onClick={() => void initialize()}>{busy ? '正在处理…' : '初始化表格结构'}</button>
-                  <button type="button" className="sidebar-skip-button" onClick={event => { event.preventDefault(); event.stopPropagation(); skipInitialize(); }}>跳过</button>
+                  <button type="button" className="sidebar-skip-button" disabled={busy} onClick={event => { event.preventDefault(); event.stopPropagation(); skipInitialize(); }}>跳过</button>
                 </div>
                 {skipFeedback && <p className="sidebar-field-action-feedback" role="status">{skipFeedback}</p>}
                 <p className="sidebar-help">初始化会优先匹配同名字段，没有时按默认名称创建；跳过只使用现有字段。</p>
               </div> : <p className="sidebar-field-summary">{(() => { const num = matchedField('number', fieldNames.number); const phone = matchedField('phone', fieldNames.phone); const trigger = triggerFieldsMatched; const allMatched = num && phone && trigger; return <span className={`sidebar-field-status ${allMatched ? 'is-matched' : 'is-unmatched'}`}>{allMatched ? '全部字段已匹配' : '部分字段未匹配'}</span>; })()}</p>}
             </div>
+            {!fieldsOpen && autoUpdateEnabled && autoRunStatus && <p className="sidebar-auto-run-status" role="status">{autoRunStatus}</p>}
           </section>
 
           {fieldsReady && <section className="sidebar-panel sidebar-query-card">

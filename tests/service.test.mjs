@@ -230,12 +230,25 @@ test('自动更新输入字段后重新查询已有结果并写回新信息', as
     query: async input => {
       calls++;
       assert.equal(input.idempotencyKey, 'auto:rec1:changed');
+      assert.equal(input.fresh, undefined);
       return { number: input.number, carrier: '顺丰速运', summary: '运输中', queriedAt: new Date().toISOString(), events: [] };
     },
   });
   assert.equal(result.queried, true);
   assert.equal(calls, 1);
   assert.match(writes[0].data.fields['快递信息'], /运输中/);
+});
+test('定时刷新绕过物流缓存并写回本次查询时间', async () => {
+  const { gateway, writes } = fakeGateway({ info: '旧物流轨迹' });
+  const queriedAt = '2026-11-25T02:30:08.000Z';
+  const result = await gateway.autoQueryRecord({ recordId: 'rec1', mapping: { number: 'fld1', info: 'fld2' }, refresh: true, fresh: true, preserveExistingOnFailure: true }, {
+    query: async input => {
+      assert.equal(input.fresh, true);
+      return { number: input.number, carrier: '京东', summary: '运输中', queriedAt, events: [] };
+    },
+  });
+  assert.equal(result.written, true);
+  assert.ok(writes[0].data.fields['快递信息'].includes(`查询时间：${queriedAt}`));
 });
 test('运单号改变后可查询新运单，同一运单仍不重复查询', async () => {
   const { gateway, writes } = fakeGateway({ number: 'SF123456789', info: '快递公司：顺丰速运\n运单号：SF000000000\n旧轨迹' });
@@ -341,6 +354,18 @@ test('自动查询手机号缺失时跳过，不写入查询结果', async () =>
   assert.equal(result.queried, false);
   assert.equal(result.skipped, true);
   assert.equal(result.code, 'PHONE_REQUIRED');
+  assert.equal(writes.length, 0);
+});
+
+test('定时刷新手机号核验失败时保留已有物流结果', async () => {
+  const { gateway, writes } = fakeGateway({ number: 'ZTO123456789', info: '运单号：ZTO123456789\n旧轨迹' });
+  const result = await gateway.autoQueryRecord({
+    recordId: 'rec1', mapping: { number: 'fld1', info: 'fld2' }, refresh: true, preserveExistingOnFailure: true,
+  }, {
+    query: async () => { throw new ApiError(400, 'PHONE_REQUIRED', '缺少核验手机号'); },
+  });
+  assert.equal(result.code, 'PHONE_REQUIRED');
+  assert.equal(result.skipped, true);
   assert.equal(writes.length, 0);
 });
 test('初始化复用字段捷径已有列，仅创建缺失列并返回映射', async () => {

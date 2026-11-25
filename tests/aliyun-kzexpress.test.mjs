@@ -44,6 +44,10 @@ test('阿里云快递接口使用 APPCODE 表单请求并映射物流轨迹', as
   const cached = await service.query({ number: 'JD1234567890', carrier: '京东', phone: '13800138000' });
   assert.equal(cached.cached, true);
   assert.equal(calls.length, 1);
+  const fresh = await service.query({ number: 'JD1234567890', carrier: '京东', phone: '13800138000', fresh: true });
+  assert.equal(fresh.cached, undefined);
+  assert.equal(fresh.queriedAt, new Date(now).toISOString());
+  assert.equal(calls.length, 2);
 });
 
 test('自动识别时不传 cpCode，按需传 mobile', async () => {

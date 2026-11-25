@@ -150,7 +150,9 @@ export class BaseGateway {
     const idempotencyKey = typeof body.requestId === 'string' && body.requestId.trim() ? body.requestId.trim() : `record:${this.appToken}:${body.recordId}:${number}`;
     let result;
     try {
-      result = await service.query({ number, carrier, phone, tenantKey: this.tenantKey, recordId: body.recordId, idempotencyKey });
+      result = await service.query({ number, carrier, phone, tenantKey: this.tenantKey, recordId: body.recordId, idempotencyKey,
+        ...(body.refresh === true && body.fresh === true ? { fresh: true } : {}),
+      });
     } catch (error) {
       try {
         if (names.outputs?.syncLog) {
@@ -158,7 +160,7 @@ export class BaseGateway {
           unwrap(await this.client.base.appTableRecord.update({ path, data: { fields: { [names.outputs.syncLog]: `同步失败：${log}` } } }));
         }
       } catch (_) { /* 同步日志失败不覆盖原始查询错误。 */ }
-      if (error instanceof ApiError && ['INVALID_PHONE', 'PHONE_REQUIRED', 'PHONE_INVALID'].includes(error.code) && oldInfo) {
+      if (body.preserveExistingOnFailure !== true && error instanceof ApiError && ['INVALID_PHONE', 'PHONE_REQUIRED', 'PHONE_INVALID'].includes(error.code) && oldInfo) {
         const current = unwrap(await this.client.base.appTableRecord.get({ path })).record;
         if (plain(current.fields[names.number]).trim() === number && plain(current.fields[names.info]) === oldInfo &&
           (!names.phone || plain(current.fields[names.phone]) === plain(initial.fields[names.phone]))) {

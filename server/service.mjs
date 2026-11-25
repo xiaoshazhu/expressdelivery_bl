@@ -62,7 +62,7 @@ export function createService({ mode = 'mock', now = Date.now, provider, billing
       if (++count > 120) throw new ApiError(429, 'RATE_LIMIT', '演示服务每分钟最多查询 120 次，请稍后再试');
       if (mode !== 'mock') {
         if (!provider) throw new ApiError(503, 'PROVIDER_NOT_CONFIGURED', '真实物流接口未配置，请检查服务端环境变量');
-        const result = await provider.query({ number, carrier, phone });
+        const result = await provider.query({ number, carrier, phone, ...(input?.fresh === true ? { fresh: true } : {}) });
         await billing?.consume(input?.tenantKey, 1, { idempotencyKey: input?.idempotencyKey, recordId: input?.recordId, number, carrier });
         return result;
       }

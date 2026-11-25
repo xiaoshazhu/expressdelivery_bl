@@ -40,13 +40,13 @@ export function createKuaidi100Provider({ key, customer, fetchImpl = fetch, quer
     return { code: data[0].comCode, name: data[0].name || data[0].comCode };
   }
   return {
-    async query({ number, carrier, phone }) {
+    async query({ number, carrier, phone, fresh = false }) {
       const identified = carrier === '自动识别' ? await recognize(number) : { code: normalizeCode(carrier), name: carrier };
       const verifiedPhone = normalizePhone(phone);
       if (phoneRequired.has(identified.code) && !verifiedPhone) throw new ApiError(400, 'PHONE_REQUIRED', `${identified.name}查询需要收件人或寄件人手机号；请映射「核验手机号」文本列`);
       const cacheKey = `${identified.code}:${number}:${verifiedPhone}`;
       const cached = cache.get(cacheKey);
-      if (cached && cached.expiresAt > now()) return { ...cached.result, cached: true };
+      if (!fresh && cached && cached.expiresAt > now()) return { ...cached.result, cached: true };
       const param = JSON.stringify({ com: identified.code, num: number, ...(verifiedPhone ? { phone: verifiedPhone } : {}), resultv2: '4', order: 'desc', show: '0' });
       const sign = createHash('sha256').update(param + key + customer).digest('hex').toUpperCase();
       const body = new URLSearchParams({ customer, sign, signType: 'SHA256', param });
